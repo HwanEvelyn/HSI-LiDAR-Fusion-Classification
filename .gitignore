@@ -1,0 +1,9 @@
+data/raw/
+data/cache/
+__pycache__/
+*.pth
+*.pt
+*.log
+*.npz
+*.npy
+results/
