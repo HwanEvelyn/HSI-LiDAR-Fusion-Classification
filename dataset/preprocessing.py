@@ -17,7 +17,7 @@ class PCAResult:
 
 def pca_reduce(x: np.ndarray, n_components: int) -> PCAResult:
     """
-    pca降维，保留n_components个主成分
+    pca降维，保留n_components个主成分，SVD改成了基于协方差矩阵的特征分解，好像说会快一些
     
     args:
         x: HSI cube (H, W, C)
@@ -25,16 +25,23 @@ def pca_reduce(x: np.ndarray, n_components: int) -> PCAResult:
     returns:
         PCAResult with x_pca (H, W, b), mean (C,), components (b, C)
     """
+    x = np.asarray(x, dtype=np.float32)
     h, w, c = x.shape
     x_2d = x.reshape(-1, c)  # (H*W, C) pca需要二维数据
 
-    mean = np.mean(x_2d, axis=0)  # (C,)
+    mean = x_2d.mean(axis=0)  # (C,)
     x_centered = x_2d - mean  # (H*W, C) 中心化
 
-    U, S, Vt = np.linalg.svd(x_centered, full_matrices=False)  # SVD分解
-    components = Vt[:n_components]  # (b, C) 前b个主成分
+    # U, S, Vt = np.linalg.svd(x_centered, full_matrices=False)  # SVD分解
+    # components = Vt[:n_components]  # (b, C) 前b个主成分
+    cov = (x_centered.T @ x_centered) / max(x_centered.shape[0] - 1, 1)  # (C, C)
+    eigvals, eigvecs = np.linalg.eigh(cov)       # eigvecs: (C, C)
 
-    x_pca_2d = np.dot(x_centered, components.T) # (H*W, b) 降维后的数据，投影到新空间
+    idx = np.argsort(eigvals)[::-1]              # descending
+    eigvecs = eigvecs[:, idx]                    # (C, C)
+
+    components = eigvecs[:, :n_components].T     # (b, C)
+    x_pca_2d = x_centered @ components.T         # (N, b) = (H*W, b) 降维后的数据，投影到新空间
     x_pca = x_pca_2d.reshape(h, w, n_components) # (H, W, b) 恢复成原来的空间结构
 
     return PCAResult(
