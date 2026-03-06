@@ -40,10 +40,3 @@ def load_houston_hl(mat_path: str) -> MatData:
 
     return MatData(hsi=hsi, lidar=lidar, gt=gt)
 
-data = load_houston_hl(
-    "data/raw/Houston 2013/Houston_2013_data_hl.mat"
-)
-
-print(data.hsi.shape)    # (349,1905,144)
-print(data.lidar.shape)  # (349,1905)
-print(data.gt.shape)     # (349,1905)
