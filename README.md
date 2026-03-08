@@ -20,9 +20,8 @@
     Epoch 003 | train_loss=0.0610 | val_loss=0.0894 | val_oa=0.9756 | val_aa=0.9717 | val_kappa=0.9736
     Epoch 004 | train_loss=0.0275 | val_loss=0.0274 | val_oa=0.9933 | val_aa=0.9936 | val_kappa=0.9928
     Epoch 005 | train_loss=0.0260 | val_loss=0.0687 | val_oa=0.9723 | val_aa=0.9769 | val_kappa=0.9700
-    Test | loss=0.0521 | oa=0.9824 | aa=0.9857 | kappa=0.9810
- ```
- 结果偏高，分析原因如下：
-  - build_index()在patch_dataset.py中，是在同一张大图上按照类别随机抽像素，分成train/test，会导致train、test在空间上往往离得很近
-  -使用patch，而相邻patch高度重叠，导致teain\test不够独立
-  -验证集是从训练集切出来的，更容易高
+    Test | loss=0.0521 | oa=0.9824 | aa=0.9857 | kappa=0.9810 
+结果偏高，分析原因如下：
+- build_index()在patch_dataset.py中，是在同一张大图上按照类别随机抽像素，分成train/test，会导致train、test在空间上往往离得很近
+- 使用patch，而相邻patch高度重叠，导致teain\test不够独立
+- 验证集是从训练集切出来的，更容易高
