@@ -1,90 +1,110 @@
-"""
-    pipeline:
-    1.读取 data_hl.mat文件，提取HSI、LiDAR和GT数据
-    2.Norm → PCA → Patch √
-    3.划分训练样本列表 + patch数据集
-"""
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Tuple
+
 import numpy as np
+
 
 @dataclass
 class PCAResult:
-    x_pca: np.ndarray  # (H, W, b)
-    mean: np.ndarray  # (C,)
-    components: np.ndarray  # (b, C)
+    x_pca: np.ndarray
+    mean: np.ndarray
+    components: np.ndarray
 
-def pca_reduce(x: np.ndarray, n_components: int) -> PCAResult:
-    """
-    pca降维，保留n_components个主成分，SVD改成了基于协方差矩阵的特征分解，好像说会快一些
-    
-    args:
-        x: HSI cube (H, W, C)
-        n_components: b个主成分 int
-    returns:
-        PCAResult with x_pca (H, W, b), mean (C,), components (b, C)
-    """
+
+@dataclass
+class ZScoreStats:
+    mean: np.ndarray | float
+    std: np.ndarray | float
+
+
+def fit_zscore(x: np.ndarray, mask: np.ndarray | None = None, eps: float = 1e-6) -> ZScoreStats:
     x = np.asarray(x, dtype=np.float32)
-    h, w, c = x.shape
-    x_2d = x.reshape(-1, c)  # (H*W, C) pca需要二维数据
+    if mask is not None:
+        mask = np.asarray(mask, dtype=bool)
+        if mask.shape != x.shape[:2]:
+            raise ValueError("mask shape must match the spatial shape of x")
 
-    mean = x_2d.mean(axis=0)  # (C,)
-    x_centered = x_2d - mean  # (H*W, C) 中心化
+    if x.ndim == 3:
+        flat = x.reshape(-1, x.shape[-1]) if mask is None else x[mask]
+        mean = flat.mean(axis=0)
+        std = np.maximum(flat.std(axis=0), eps)
+        return ZScoreStats(mean=mean.astype(np.float32), std=std.astype(np.float32))
 
-    # U, S, Vt = np.linalg.svd(x_centered, full_matrices=False)  # SVD分解
-    # components = Vt[:n_components]  # (b, C) 前b个主成分
-    cov = (x_centered.T @ x_centered) / max(x_centered.shape[0] - 1, 1)  # (C, C)
-    eigvals, eigvecs = np.linalg.eigh(cov)       # eigvecs: (C, C)
+    flat = x.reshape(-1) if mask is None else x[mask]
+    mean = float(flat.mean())
+    std = max(float(flat.std()), eps)
+    return ZScoreStats(mean=mean, std=std)
 
-    idx = np.argsort(eigvals)[::-1]              # descending
-    eigvecs = eigvecs[:, idx]                    # (C, C)
 
-    components = eigvecs[:, :n_components].T     # (b, C)
-    x_pca_2d = x_centered @ components.T         # (N, b) = (H*W, b) 降维后的数据，投影到新空间
-    x_pca = x_pca_2d.reshape(h, w, n_components) # (H, W, b) 恢复成原来的空间结构
+def apply_zscore(x: np.ndarray, stats: ZScoreStats) -> np.ndarray:
+    x = np.asarray(x, dtype=np.float32)
+    return (x - stats.mean) / stats.std
 
-    return PCAResult(
-        x_pca=x_pca.astype(np.float32),
-        mean=mean.astype(np.float32),
-        components=components.astype(np.float32)
-    )
 
 def zscore_norm(x: np.ndarray, eps: float = 1e-6) -> np.ndarray:
-    """
-    z-score标准化
+    return apply_zscore(x, fit_zscore(x, mask=None, eps=eps))
 
-    args:
-        x: 输入数据 (H, W, C) 或者 (H, W)
-        eps: 防止除以0的小常数
-    returns:
-        标准化后的数据 (H, W, C)
-    """
-    x = x.astype(np.float32)
-    if(x.ndim == 3):
-        mean = x.reshape(-1, x.shape[-1]).mean(axis=0)
-        std = x.reshape(-1, x.shape[-1]).std(axis=0)
-        std = np.maximum(std, eps)
-        return (x - mean) / std
-    mean = float(x.mean())
-    std = float(x.std())
-    std = max(std, eps)
-    return (x - mean) / std
+
+def zscore_norm_with_mask(
+    x: np.ndarray,
+    mask: np.ndarray | None = None,
+    eps: float = 1e-6,
+) -> tuple[np.ndarray, ZScoreStats]:
+    stats = fit_zscore(x, mask=mask, eps=eps)
+    return apply_zscore(x, stats), stats
+
+
+def _fit_pca_from_flat(x_2d: np.ndarray, n_components: int) -> tuple[np.ndarray, np.ndarray]:
+    mean = x_2d.mean(axis=0)
+    x_centered = x_2d - mean
+    cov = (x_centered.T @ x_centered) / max(x_centered.shape[0] - 1, 1)
+    eigvals, eigvecs = np.linalg.eigh(cov)
+
+    idx = np.argsort(eigvals)[::-1]
+    eigvecs = eigvecs[:, idx]
+    components = eigvecs[:, :n_components].T
+    return mean.astype(np.float32), components.astype(np.float32)
+
+
+def pca_project(x: np.ndarray, mean: np.ndarray, components: np.ndarray) -> np.ndarray:
+    x = np.asarray(x, dtype=np.float32)
+    h, w, c = x.shape
+    x_centered = x.reshape(-1, c) - mean
+    x_pca_2d = x_centered @ components.T
+    return x_pca_2d.reshape(h, w, components.shape[0]).astype(np.float32)
+
+
+def pca_reduce(x: np.ndarray, n_components: int) -> PCAResult:
+    x = np.asarray(x, dtype=np.float32)
+    h, w, c = x.shape
+    mean, components = _fit_pca_from_flat(x.reshape(-1, c), n_components)
+    x_pca = pca_project(x, mean, components)
+    return PCAResult(x_pca=x_pca, mean=mean, components=components)
+
+
+def pca_reduce_with_mask(
+    x: np.ndarray,
+    n_components: int,
+    mask: np.ndarray | None = None,
+) -> PCAResult:
+    x = np.asarray(x, dtype=np.float32)
+    if mask is not None:
+        mask = np.asarray(mask, dtype=bool)
+        if mask.shape != x.shape[:2]:
+            raise ValueError("mask shape must match the first two dimensions of x")
+        x_fit = x[mask]
+    else:
+        x_fit = x.reshape(-1, x.shape[-1])
+
+    mean, components = _fit_pca_from_flat(x_fit, n_components)
+    x_pca = pca_project(x, mean, components)
+    return PCAResult(x_pca=x_pca, mean=mean, components=components)
+
 
 def pad_reflect(x: np.ndarray, pad: int) -> np.ndarray:
-    """
-    填充边界，使用反射填充
-
-    args:
-        x: 输入数据 (H, W, C) 或者 (H, W)
-        pad: 填充大小 int
-
-    returns:
-        填充后的数据 (H+2*pad, W+2*pad, C) 或者 (H+2*pad, W+2*pad)
-    """
     if pad <= 0:
         return x
     if x.ndim == 3:
-        return np.pad(x, ((pad, pad), (pad, pad), (0, 0)), mode='reflect')
-    return np.pad(x, ((pad, pad), (pad, pad)), mode='reflect')
-
+        return np.pad(x, ((pad, pad), (pad, pad), (0, 0)), mode="reflect")
+    return np.pad(x, ((pad, pad), (pad, pad)), mode="reflect")

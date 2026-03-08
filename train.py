@@ -1,12 +1,9 @@
-"""
-    训练流程的脚本，把数据、模型、优化器、loss、训练循环串起来
-"""
 from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict
 
 import numpy as np
 import torch
@@ -14,9 +11,9 @@ from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader, random_split
 
-from dataset.mat_loader import load_houston_hl
+from dataset.mat_loader import build_official_houston_split, load_houston_hl
 from dataset.patch_dataset import HsiLidarPatchDataset, bulid_index
-from dataset.preprocessing import pca_reduce, zscore_norm
+from dataset.preprocessing import pca_reduce, pca_reduce_with_mask, zscore_norm, zscore_norm_with_mask
 from models.baseline_cnn import BaselineFusionNet
 from utils.metrics import confusion_matrix, oa_aa_kappa
 
@@ -31,7 +28,7 @@ class SplitLoaders:
 
 
 def build_dataloaders(
-    mat_path: str,
+    data_root: str,
     patch_size: int,
     pca_components: int,
     train_ratio: float,
@@ -39,37 +36,47 @@ def build_dataloaders(
     batch_size: int,
     num_workers: int,
     seed: int,
+    split_mode: str,
+    preprocess_scope: str,
 ) -> SplitLoaders:
-    """
-    负责整个数据准备流程：
-    
-    GT 全部有标签像素
-    先切成 train/test
-    再从 train 中切出一部分 val
-    """
-    data = load_houston_hl(mat_path)
-    hsi = zscore_norm(data.hsi)
-    lidar = zscore_norm(data.lidar)
+    data = load_houston_hl(data_root)
 
-    if pca_components > 0 and pca_components < hsi.shape[-1]:
-        hsi = pca_reduce(hsi, n_components=pca_components).x_pca
+    if split_mode == "official":
+        train_items, test_items, num_classes = build_official_houston_split(data)
+    else:
+        train_items, test_items, num_classes = bulid_index(
+            data.gt,
+            train_ratio=train_ratio,
+            seed=seed,
+        )
 
-    train_items, test_items, num_classes = bulid_index(data.gt, train_ratio=train_ratio, seed=seed)  # 按照标签划分train/test样本索引
-    
-    # 构造patch dataset,它会把每个像素点变成一个 patch 样本，并输出：hsi_t: (C, patch, patch),lidar_t: (1, patch, patch),y_t: 标签
+    train_mask = np.zeros_like(data.gt, dtype=bool)
+    for item in train_items:
+        train_mask[item.r, item.c] = True
+
+    if preprocess_scope == "train":
+        hsi, _ = zscore_norm_with_mask(data.hsi, mask=train_mask)
+        lidar, _ = zscore_norm_with_mask(data.lidar, mask=train_mask)
+        if pca_components > 0 and pca_components < hsi.shape[-1]:
+            hsi = pca_reduce_with_mask(hsi, n_components=pca_components, mask=train_mask).x_pca
+    else:
+        hsi = zscore_norm(data.hsi)
+        lidar = zscore_norm(data.lidar)
+        if pca_components > 0 and pca_components < hsi.shape[-1]:
+            hsi = pca_reduce(hsi, n_components=pca_components).x_pca
+
     train_dataset_full = HsiLidarPatchDataset(hsi, lidar, train_items, patch_size)
     test_dataset = HsiLidarPatchDataset(hsi, lidar, test_items, patch_size)
 
     val_size = int(len(train_dataset_full) * val_ratio)
     train_size = len(train_dataset_full) - val_size
     if train_size <= 0:
-        raise ValueError("Training split is empty. Adjust train_ratio or val_ratio.")
-    if val_size == 0:
-        val_size = min(1, len(train_dataset_full) - 1)
-        train_size = len(train_dataset_full) - val_size
+        raise ValueError("Training split is empty. Adjust split settings or val_ratio.")
+    if val_size == 0 and len(train_dataset_full) > 1:
+        val_size = 1
+        train_size = len(train_dataset_full) - 1
 
     generator = torch.Generator().manual_seed(seed)
-    # 从训练集中切一部分出来做验证集
     train_dataset, val_dataset = random_split(
         train_dataset_full,
         [train_size, val_size],
@@ -81,7 +88,6 @@ def build_dataloaders(
         "num_workers": num_workers,
         "pin_memory": torch.cuda.is_available(),
     }
-    # 用 DataLoader 包装成可迭代的加载器，训练时会自动打乱训练集，验证和测试集不打乱
     train_loader = DataLoader(train_dataset, shuffle=True, drop_last=False, **loader_kwargs)
     val_loader = DataLoader(val_dataset, shuffle=False, drop_last=False, **loader_kwargs)
     test_loader = DataLoader(test_dataset, shuffle=False, drop_last=False, **loader_kwargs)
@@ -100,11 +106,8 @@ def run_epoch(
     loader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
-    optimizer: Adam | None = None,     # 如果传入optimizier就训练，否则只评估
-) -> Tuple[float, np.ndarray, np.ndarray]:
-    """
-    训练和验证共用的单轮循环
-    """
+    optimizer: Adam | None = None,
+) -> tuple[float, np.ndarray, np.ndarray]:
     is_train = optimizer is not None
     model.train(is_train)
 
@@ -119,14 +122,12 @@ def run_epoch(
         target = target.to(device=device, dtype=torch.long, non_blocking=True)
 
         if is_train:
-            optimizer.zero_grad(set_to_none=True)   # 清梯度
+            optimizer.zero_grad(set_to_none=True)
 
         with torch.set_grad_enabled(is_train):
-            # 前向
             logits = model(hsi, lidar)
             loss = criterion(logits, target)
             if is_train:
-                # 反向传播、更新参数
                 loss.backward()
                 optimizer.step()
 
@@ -149,10 +150,6 @@ def evaluate_split(
     device: torch.device,
     num_classes: int,
 ) -> Dict[str, float]:
-    """
-    对run_epoch的结果进行评估，计算混淆矩阵和相关指标
-    返回结果是一个字典，包含loss、OA、AA和Kappa
-    """
     loss, y_true, y_pred = run_epoch(model, loader, criterion, device, optimizer=None)
     cm = confusion_matrix(y_true, y_pred, num_classes=num_classes)
     metrics = oa_aa_kappa(cm)
@@ -161,13 +158,12 @@ def evaluate_split(
 
 
 def parse_args() -> argparse.Namespace:
-    """
-    命令行参数
-    """
     parser = argparse.ArgumentParser(description="Minimal HSI-LiDAR baseline training")
-    parser.add_argument("--mat-path", type=str, default="data/raw/Houston 2013/Houston_2013_data_hl.mat")
+    parser.add_argument("--data-root", type=str, default="data/raw/Houston 2013/2013_DFTC")
     parser.add_argument("--patch-size", type=int, default=11)
     parser.add_argument("--pca-components", type=int, default=30)
+    parser.add_argument("--split-mode", type=str, choices=["random", "official"], default="official")
+    parser.add_argument("--preprocess-scope", type=str, choices=["full", "train"], default="train")
     parser.add_argument("--train-ratio", type=float, default=0.6)
     parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--batch-size", type=int, default=64)
@@ -180,29 +176,19 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """
-    主函数，负责整体流程控制：
-    1.读参数、设置随机种子
-    2.选device
-    3.准备数据，构造dataloader
-    4.构造模型
-    5.定义loss和optimizer
-    6.epoch循环
-    7.测试
-    """
     args = parse_args()
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    mat_path = Path(args.mat_path)
-    if not mat_path.exists():
-        raise FileNotFoundError(f"Dataset file not found: {mat_path}")
+    data_root = Path(args.data_root)
+    if not data_root.exists():
+        raise FileNotFoundError(f"Dataset directory not found: {data_root}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     loaders = build_dataloaders(
-        mat_path=str(mat_path),
+        data_root=str(data_root),
         patch_size=args.patch_size,
         pca_components=args.pca_components,
         train_ratio=args.train_ratio,
@@ -210,6 +196,8 @@ def main() -> None:
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         seed=args.seed,
+        split_mode=args.split_mode,
+        preprocess_scope=args.preprocess_scope,
     )
 
     model = BaselineFusionNet(
@@ -221,7 +209,8 @@ def main() -> None:
 
     print(
         f"Train/Val/Test batches: {len(loaders.train)}/{len(loaders.val)}/{len(loaders.test)} | "
-        f"HSI channels: {loaders.hsi_channels} | Classes: {loaders.num_classes}"
+        f"HSI channels: {loaders.hsi_channels} | Classes: {loaders.num_classes} | "
+        f"split={args.split_mode} | preprocess={args.preprocess_scope}"
     )
 
     for epoch in range(1, args.epochs + 1):

@@ -8,18 +8,15 @@ from dataset.patch_dataset import bulid_index, HsiLidarPatchDataset
 
 def main() -> None:
     data = load_houston_hl(
-        "data/raw/Houston 2013/Houston_2013_data_hl.mat"
+        "data/raw/Houston 2013/2013_DFTC"
     )
     hsi, lidar, gt = data.hsi, data.lidar, data.gt
 
     print(hsi.shape)    # (349,1905,144)
     print(lidar.shape)  # (349,1905)
     print(gt.shape)     # (349,1905)
+    print("train/test labeled:", int((data.train_gt > 0).sum()), int((data.test_gt > 0).sum()))
 
-    hsi_norm = zscore_norm(data.hsi)
-    lidar_norm = zscore_norm(data.lidar)
-
-    # 1.Norm
     hsi_n = zscore_norm(hsi)
     lidar_n = zscore_norm(lidar)
 
