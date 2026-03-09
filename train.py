@@ -16,6 +16,7 @@ from dataset.mat_loader import build_official_houston_split, load_houston_hl
 from dataset.patch_dataset import HsiLidarPatchDataset, bulid_index
 from dataset.preprocessing import pca_reduce, pca_reduce_with_mask, zscore_norm, zscore_norm_with_mask
 from models.baseline_cnn import BaselineFusionNet
+from models.hct_bgc import HCT_BGC
 from utils.logger import SimpleLogger
 from utils.metrics import confusion_matrix, oa_aa_kappa
 from utils.seed import set_seed
@@ -145,6 +146,7 @@ def evaluate_split(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Minimal HSI-LiDAR baseline training")
     parser.add_argument("--data-root", type=str, default="data/raw/Houston 2013/2013_DFTC")
+    parser.add_argument("--model", type=str, choices=["baseline", "hct_bgc"], default="baseline")
     parser.add_argument("--patch-size", type=int, default=11)
     parser.add_argument("--pca-components", type=int, default=30)
     parser.add_argument("--split-mode", type=str, choices=["random", "official"], default="official")
@@ -187,17 +189,23 @@ def main() -> None:
         preprocess_scope=args.preprocess_scope,
     )
 
-    model = BaselineFusionNet(
-        hsi_in_channels=loaders.hsi_channels,
-        num_classes=loaders.num_classes,
-    ).to(device)
+    if args.model == "baseline":
+        model = BaselineFusionNet(
+            hsi_in_channels=loaders.hsi_channels,
+            num_classes=loaders.num_classes,
+        ).to(device)
+    else:
+        model = HCT_BGC(
+            hsi_in_channels=loaders.hsi_channels,
+            num_classes=loaders.num_classes,
+        ).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     logger.log(
         f"Train/Test batches: {len(loaders.train)}/{len(loaders.test)} | "
         f"HSI channels: {loaders.hsi_channels} | Classes: {loaders.num_classes} | "
-        f"split={args.split_mode} | preprocess={args.preprocess_scope}"
+        f"split={args.split_mode} | preprocess={args.preprocess_scope} | model={args.model}"
     )
 
     best_oa = -1.0
