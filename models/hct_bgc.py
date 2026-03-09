@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from .fusion_blocks import ConcatFusionHead
+from .fusion_blocks import BiCTAFusionBlock, GatedFuse
 from .hct_backbone import HsiCnnEncoder, LidarCnnEncoder, Tokenizer
 
 
@@ -15,6 +15,7 @@ class HCT_BGC(nn.Module):
         embed_dim: int = 128,
         num_heads: int = 4,
         num_layers: int = 2,
+        fusion_layers: int = 1,
         mlp_dim: int = 256,
         dropout: float = 0.1,
     ) -> None:
@@ -25,16 +26,18 @@ class HCT_BGC(nn.Module):
         self.hsi_tokenizer = Tokenizer(self.hsi_encoder.out_channels, embed_dim=embed_dim)
         self.lidar_tokenizer = Tokenizer(self.lidar_encoder.out_channels, embed_dim=embed_dim)
 
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embed_dim,
-            nhead=num_heads,
-            dim_feedforward=mlp_dim,
-            dropout=dropout,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
+        self.h_te = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=embed_dim,
+                nhead=num_heads,
+                dim_feedforward=mlp_dim,
+                dropout=dropout,
+                activation="gelu",
+                batch_first=True,
+                norm_first=False,
+            ),
+            num_layers=num_layers,
         )
-        self.h_te = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.l_te = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
                 d_model=embed_dim,
@@ -43,12 +46,29 @@ class HCT_BGC(nn.Module):
                 dropout=dropout,
                 activation="gelu",
                 batch_first=True,
-                norm_first=True,
+                norm_first=False,
             ),
             num_layers=num_layers,
         )
-
-        self.fusion_head = ConcatFusionHead(embed_dim, embed_dim, hidden_dim=mlp_dim, num_classes=num_classes)
+        self.fusion_blocks = nn.ModuleList(
+            [
+                BiCTAFusionBlock(
+                    embed_dim=embed_dim,
+                    num_heads=num_heads,
+                    mlp_dim=mlp_dim,
+                    dropout=dropout,
+                )
+                for _ in range(fusion_layers)
+            ]
+        )
+        self.gated_fuse = GatedFuse(embed_dim)
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(embed_dim),
+            nn.Linear(embed_dim, mlp_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(mlp_dim, num_classes),
+        )
 
     def forward(self, hsi: torch.Tensor, lidar: torch.Tensor) -> torch.Tensor:
         h_feat_map = self.hsi_encoder(hsi)
@@ -60,6 +80,10 @@ class HCT_BGC(nn.Module):
         h_tokens = self.h_te(h_tokens)
         l_tokens = self.l_te(l_tokens)
 
+        for block in self.fusion_blocks:
+            h_tokens, l_tokens = block(h_tokens, l_tokens)
+
         h_cls = h_tokens[:, 0]
         l_cls = l_tokens[:, 0]
-        return self.fusion_head(h_cls, l_cls)
+        fused_token = self.gated_fuse(h_cls, l_cls)
+        return self.classifier(fused_token)

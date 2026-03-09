@@ -149,6 +149,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", type=str, choices=["baseline", "hct_bgc"], default="baseline")
     parser.add_argument("--patch-size", type=int, default=11)
     parser.add_argument("--pca-components", type=int, default=30)
+    parser.add_argument("--fusion-layers", type=int, default=1)
     parser.add_argument("--split-mode", type=str, choices=["random", "official"], default="official")
     parser.add_argument("--preprocess-scope", type=str, choices=["full", "train"], default="train")
     parser.add_argument("--train-ratio", type=float, default=0.6)
@@ -198,6 +199,7 @@ def main() -> None:
         model = HCT_BGC(
             hsi_in_channels=loaders.hsi_channels,
             num_classes=loaders.num_classes,
+            fusion_layers=args.fusion_layers,
         ).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -205,7 +207,8 @@ def main() -> None:
     logger.log(
         f"Train/Test batches: {len(loaders.train)}/{len(loaders.test)} | "
         f"HSI channels: {loaders.hsi_channels} | Classes: {loaders.num_classes} | "
-        f"split={args.split_mode} | preprocess={args.preprocess_scope} | model={args.model}"
+        f"split={args.split_mode} | preprocess={args.preprocess_scope} | "
+        f"model={args.model} | fusion_layers={args.fusion_layers}"
     )
 
     best_oa = -1.0
