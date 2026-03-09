@@ -9,7 +9,7 @@ import torch
 from torch import nn
 
 from models.baseline_cnn import BaselineFusionNet
-from train import build_dataloaders, evaluate_split
+from train import build_dataloaders, evaluate_split, resolve_device
 from utils.logger import SimpleLogger
 from utils.seed import set_seed
 
@@ -18,6 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate a trained HSI-LiDAR baseline checkpoint")
     parser.add_argument("--checkpoint", type=str, default="results/run_baseline/best.pth")
     parser.add_argument("--output-dir", type=str, default=None)
+    parser.add_argument("--device", type=str, choices=["auto", "cuda", "cpu"], default="auto")
     return parser.parse_args()
 
 
@@ -35,8 +36,11 @@ def main() -> None:
     train_args = checkpoint["args"]
     set_seed(int(train_args["seed"]))
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device)
     logger.log(f"Using device: {device}")
+    logger.log(f"PyTorch version: {torch.__version__} | CUDA build: {torch.version.cuda}")
+    if device.type == "cuda":
+        logger.log(f"CUDA device name: {torch.cuda.get_device_name(0)}")
 
     loaders = build_dataloaders(
         data_root=train_args["data_root"],

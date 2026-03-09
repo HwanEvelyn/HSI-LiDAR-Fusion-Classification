@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import struct
 import zipfile
 from dataclasses import dataclass
@@ -11,6 +12,19 @@ from matplotlib.path import Path as MplPath
 from skimage.draw import polygon as draw_polygon
 
 from .patch_dataset import IndexItem
+
+
+class _SuppressGdalNoDataFilter(logging.Filter):
+    """
+    过滤掉 tifffile 模块的 GDAL_NODATA 错误信息
+    """
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return "parsing GDAL_NODATA tag raised ValueError" not in message
+
+
+_TIFFFILE_LOGGER = logging.getLogger("tifffile")
+_TIFFFILE_LOGGER.addFilter(_SuppressGdalNoDataFilter())
 
 
 @dataclass

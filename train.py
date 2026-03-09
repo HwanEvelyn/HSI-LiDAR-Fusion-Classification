@@ -157,10 +157,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
-    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-dir", type=str, default="results/run_baseline")
+    parser.add_argument("--device", type=str, choices=["auto", "cuda", "cpu"], default="auto")
     return parser.parse_args()
+
+
+def resolve_device(device_arg: str) -> torch.device:
+    if device_arg == "cpu":
+        return torch.device("cpu")
+    if device_arg == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA was requested with --device cuda, but torch.cuda.is_available() is False. "
+                "Install a CUDA-enabled PyTorch build and check your GPU driver."
+            )
+        return torch.device("cuda")
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def main() -> None:
@@ -175,8 +189,12 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     logger = SimpleLogger(output_dir / "train_log.txt")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device)
     logger.log(f"Using device: {device}")
+    # logger.log(f"PyTorch version: {torch.__version__} | CUDA build: {torch.version.cuda}")
+    if device.type == "cuda":
+        # logger.log(f"CUDA device name: {torch.cuda.get_device_name(0)}")
+        torch.backends.cudnn.benchmark = True
 
     loaders = build_dataloaders(
         data_root=str(data_root),
