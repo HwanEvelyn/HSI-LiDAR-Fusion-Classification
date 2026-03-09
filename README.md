@@ -25,3 +25,11 @@
 - build_index()在patch_dataset.py中，是在同一张大图上按照类别随机抽像素，分成train/test，会导致train、test在空间上往往离得很近
 - 使用patch，而相邻patch高度重叠，导致teain\test不够独立
 - 验证集是从训练集切出来的，更容易高
+## 2026/3/8进度日志
+- 解决 baseline 分数偏高的问题
+- 调整 data 数据源为官方数据源，数据划分采用官方形式
+- 得到对比结果（1个 epoch ）:
+  - 官方 split + train-only preprocess: OA 0.7145
+  - 官方 split + full-scene preprocess: OA 0.6831
+  - 随机像素 split + full-scene preprocess: OA 0.8838
+
