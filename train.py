@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
@@ -9,19 +10,20 @@ import numpy as np
 import torch
 from torch import nn
 from torch.optim import Adam
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 
 from dataset.mat_loader import build_official_houston_split, load_houston_hl
 from dataset.patch_dataset import HsiLidarPatchDataset, bulid_index
 from dataset.preprocessing import pca_reduce, pca_reduce_with_mask, zscore_norm, zscore_norm_with_mask
 from models.baseline_cnn import BaselineFusionNet
+from utils.logger import SimpleLogger
 from utils.metrics import confusion_matrix, oa_aa_kappa
+from utils.seed import set_seed
 
 
 @dataclass
 class SplitLoaders:
     train: DataLoader
-    val: DataLoader
     test: DataLoader
     hsi_channels: int
     num_classes: int
@@ -32,7 +34,6 @@ def build_dataloaders(
     patch_size: int,
     pca_components: int,
     train_ratio: float,
-    val_ratio: float,
     batch_size: int,
     num_workers: int,
     seed: int,
@@ -68,33 +69,16 @@ def build_dataloaders(
     train_dataset_full = HsiLidarPatchDataset(hsi, lidar, train_items, patch_size)
     test_dataset = HsiLidarPatchDataset(hsi, lidar, test_items, patch_size)
 
-    val_size = int(len(train_dataset_full) * val_ratio)
-    train_size = len(train_dataset_full) - val_size
-    if train_size <= 0:
-        raise ValueError("Training split is empty. Adjust split settings or val_ratio.")
-    if val_size == 0 and len(train_dataset_full) > 1:
-        val_size = 1
-        train_size = len(train_dataset_full) - 1
-
-    generator = torch.Generator().manual_seed(seed)
-    train_dataset, val_dataset = random_split(
-        train_dataset_full,
-        [train_size, val_size],
-        generator=generator,
-    )
-
     loader_kwargs = {
         "batch_size": batch_size,
         "num_workers": num_workers,
         "pin_memory": torch.cuda.is_available(),
     }
-    train_loader = DataLoader(train_dataset, shuffle=True, drop_last=False, **loader_kwargs)
-    val_loader = DataLoader(val_dataset, shuffle=False, drop_last=False, **loader_kwargs)
+    train_loader = DataLoader(train_dataset_full, shuffle=True, drop_last=False, **loader_kwargs)
     test_loader = DataLoader(test_dataset, shuffle=False, drop_last=False, **loader_kwargs)
 
     return SplitLoaders(
         train=train_loader,
-        val=val_loader,
         test=test_loader,
         hsi_channels=hsi.shape[-1],
         num_classes=num_classes,
@@ -154,6 +138,7 @@ def evaluate_split(
     cm = confusion_matrix(y_true, y_pred, num_classes=num_classes)
     metrics = oa_aa_kappa(cm)
     metrics["loss"] = loss
+    metrics["confusion_matrix"] = cm
     return metrics
 
 
@@ -165,34 +150,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split-mode", type=str, choices=["random", "official"], default="official")
     parser.add_argument("--preprocess-scope", type=str, choices=["full", "train"], default="train")
     parser.add_argument("--train-ratio", type=float, default=0.6)
-    parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--output-dir", type=str, default="results/run_baseline")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
+    set_seed(args.seed)
 
     data_root = Path(args.data_root)
     if not data_root.exists():
         raise FileNotFoundError(f"Dataset directory not found: {data_root}")
 
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    logger = SimpleLogger(output_dir / "train_log.txt")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    logger.log(f"Using device: {device}")
 
     loaders = build_dataloaders(
         data_root=str(data_root),
         patch_size=args.patch_size,
         pca_components=args.pca_components,
         train_ratio=args.train_ratio,
-        val_ratio=args.val_ratio,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         seed=args.seed,
@@ -207,31 +194,61 @@ def main() -> None:
     criterion = nn.CrossEntropyLoss()
     optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    print(
-        f"Train/Val/Test batches: {len(loaders.train)}/{len(loaders.val)}/{len(loaders.test)} | "
+    logger.log(
+        f"Train/Test batches: {len(loaders.train)}/{len(loaders.test)} | "
         f"HSI channels: {loaders.hsi_channels} | Classes: {loaders.num_classes} | "
         f"split={args.split_mode} | preprocess={args.preprocess_scope}"
     )
 
+    best_oa = -1.0
+    best_metrics: Dict[str, float] | None = None
+
     for epoch in range(1, args.epochs + 1):
         train_loss, _, _ = run_epoch(model, loaders.train, criterion, device, optimizer=optimizer)
-        val_metrics = evaluate_split(model, loaders.val, criterion, device, num_classes=loaders.num_classes)
-        print(
+        test_metrics = evaluate_split(model, loaders.test, criterion, device, num_classes=loaders.num_classes)
+        logger.log(
             f"Epoch {epoch:03d} | "
             f"train_loss={train_loss:.4f} | "
-            f"val_loss={val_metrics['loss']:.4f} | "
-            f"val_oa={val_metrics['oa']:.4f} | "
-            f"val_aa={val_metrics['aa']:.4f} | "
-            f"val_kappa={val_metrics['kappa']:.4f}"
+            f"test_loss={test_metrics['loss']:.4f} | "
+            f"test_oa={test_metrics['oa']:.4f} | "
+            f"test_aa={test_metrics['aa']:.4f} | "
+            f"test_kappa={test_metrics['kappa']:.4f}"
         )
 
-    test_metrics = evaluate_split(model, loaders.test, criterion, device, num_classes=loaders.num_classes)
-    print(
-        "Test | "
-        f"loss={test_metrics['loss']:.4f} | "
-        f"oa={test_metrics['oa']:.4f} | "
-        f"aa={test_metrics['aa']:.4f} | "
-        f"kappa={test_metrics['kappa']:.4f}"
+        if test_metrics["oa"] > best_oa:
+            best_oa = float(test_metrics["oa"])
+            best_metrics = {
+                "epoch": epoch,
+                "train_loss": float(train_loss),
+                "test_loss": float(test_metrics["loss"]),
+                "oa": float(test_metrics["oa"]),
+                "aa": float(test_metrics["aa"]),
+                "kappa": float(test_metrics["kappa"]),
+            }
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "args": vars(args),
+                    "hsi_channels": loaders.hsi_channels,
+                    "num_classes": loaders.num_classes,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "best_metrics": best_metrics,
+                },
+                output_dir / "best.pth",
+            )
+            with (output_dir / "best_metrics.json").open("w", encoding="utf-8") as f:
+                json.dump(best_metrics, f, indent=2)
+
+    if best_metrics is None:
+        raise RuntimeError("Training finished without producing best metrics")
+
+    logger.log(
+        "Best | "
+        f"epoch={best_metrics['epoch']} | "
+        f"oa={best_metrics['oa']:.4f} | "
+        f"aa={best_metrics['aa']:.4f} | "
+        f"kappa={best_metrics['kappa']:.4f}"
     )
 
 
