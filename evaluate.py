@@ -8,8 +8,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from models.baseline_cnn import BaselineFusionNet
-from train import build_dataloaders, evaluate_split, resolve_device
+from train import build_dataloaders, create_model, evaluate_split, resolve_device
 from utils.logger import SimpleLogger
 from utils.seed import set_seed
 
@@ -54,10 +53,7 @@ def main() -> None:
         preprocess_scope=str(train_args["preprocess_scope"]),
     )
 
-    model = BaselineFusionNet(
-        hsi_in_channels=int(checkpoint["hsi_channels"]),
-        num_classes=int(checkpoint["num_classes"]),
-    ).to(device)
+    model = create_model(train_args, int(checkpoint["hsi_channels"]), int(checkpoint["num_classes"])).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     criterion = nn.CrossEntropyLoss()
 

@@ -30,6 +30,23 @@ class SplitLoaders:
     num_classes: int
 
 
+def create_model(args: argparse.Namespace | dict, hsi_channels: int, num_classes: int) -> nn.Module:
+    model_name = args["model"] if isinstance(args, dict) else args.model
+    fusion_layers = args.get("fusion_layers", 1) if isinstance(args, dict) else args.fusion_layers
+    if model_name == "baseline":
+        return BaselineFusionNet(
+            hsi_in_channels=hsi_channels,
+            num_classes=num_classes,
+        )
+    if model_name == "hct_bgc":
+        return HCT_BGC(
+            hsi_in_channels=hsi_channels,
+            num_classes=num_classes,
+            fusion_layers=fusion_layers,
+        )
+    raise ValueError(f"Unsupported model: {model_name}")
+
+
 def build_dataloaders(
     data_root: str,
     patch_size: int,
@@ -208,17 +225,7 @@ def main() -> None:
         preprocess_scope=args.preprocess_scope,
     )
 
-    if args.model == "baseline":
-        model = BaselineFusionNet(
-            hsi_in_channels=loaders.hsi_channels,
-            num_classes=loaders.num_classes,
-        ).to(device)
-    else:
-        model = HCT_BGC(
-            hsi_in_channels=loaders.hsi_channels,
-            num_classes=loaders.num_classes,
-            fusion_layers=args.fusion_layers,
-        ).to(device)
+    model = create_model(args, loaders.hsi_channels, loaders.num_classes).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
