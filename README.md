@@ -38,8 +38,12 @@
 - 加入 Bi-CTA 和 Gated Fusion，跑第一版主模型 
 - base 环境改成虚拟环境 + cpu 跑改为 cuda 跑
 - 补评估、出第一张分类图、写周报
-
-## macOS Apple Silicon 说明
+## 2026/3/12进度日志
+- 调整代码兼容mac的mps加速
+- 梳理主干接口，补齐论文 Method 对应的代码开关
+- 补齐 HCT-BGC 结构细节，做成真正的 v1 主干：tag v0.1.0
+- 接入 Contrastive Alignment Loss
+### macOS Apple Silicon 说明
 - M 系列 Mac 不使用 CUDA，PyTorch 应直接安装官方默认包并使用 `mps` 加速。
 - 建议命令：
   ```bash
