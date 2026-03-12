@@ -56,9 +56,13 @@ def zscore_norm_with_mask(
 
 
 def _fit_pca_from_flat(x_2d: np.ndarray, n_components: int) -> tuple[np.ndarray, np.ndarray]:
+    x_2d = np.asarray(x_2d, dtype=np.float64)
+    if not np.isfinite(x_2d).all():
+        raise ValueError("PCA 输入包含 NaN 或 Inf，无法继续拟合")
+
     mean = x_2d.mean(axis=0)
     x_centered = x_2d - mean
-    cov = (x_centered.T @ x_centered) / max(x_centered.shape[0] - 1, 1)
+    cov = np.einsum("ni,nj->ij", x_centered, x_centered) / max(x_centered.shape[0] - 1, 1)
     eigvals, eigvecs = np.linalg.eigh(cov)
 
     idx = np.argsort(eigvals)[::-1]
@@ -68,10 +72,15 @@ def _fit_pca_from_flat(x_2d: np.ndarray, n_components: int) -> tuple[np.ndarray,
 
 
 def pca_project(x: np.ndarray, mean: np.ndarray, components: np.ndarray) -> np.ndarray:
-    x = np.asarray(x, dtype=np.float32)
+    x = np.asarray(x, dtype=np.float64)
+    mean = np.asarray(mean, dtype=np.float64)
+    components = np.asarray(components, dtype=np.float64)
+    if not np.isfinite(x).all():
+        raise ValueError("PCA 投影输入包含 NaN 或 Inf，无法继续计算")
+
     h, w, c = x.shape
     x_centered = x.reshape(-1, c) - mean
-    x_pca_2d = x_centered @ components.T
+    x_pca_2d = np.einsum("nc,dc->nd", x_centered, components)
     return x_pca_2d.reshape(h, w, components.shape[0]).astype(np.float32)
 
 
