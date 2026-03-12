@@ -42,9 +42,32 @@ def create_model(args: argparse.Namespace | dict, hsi_channels: int, num_classes
         return HCT_BGC(
             hsi_in_channels=hsi_channels,
             num_classes=num_classes,
+            embed_dim=args.get("embed_dim", 128) if isinstance(args, dict) else args.embed_dim,
+            num_heads=args.get("num_heads", 4) if isinstance(args, dict) else args.num_heads,
+            num_layers=args.get("num_layers", 2) if isinstance(args, dict) else args.num_layers,
             fusion_layers=fusion_layers,
+            dropout=args.get("dropout", 0.1) if isinstance(args, dict) else args.dropout,
         )
     raise ValueError(f"Unsupported model: {model_name}")
+
+
+def unpack_model_outputs(outputs: torch.Tensor | Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    if isinstance(outputs, dict):
+        if "logits" not in outputs:
+            raise KeyError("Model output dictionary must contain a 'logits' key")
+        return outputs
+    return {"logits": outputs}
+
+
+def collect_model_config(model: nn.Module, args: argparse.Namespace, hsi_channels: int, num_classes: int) -> Dict[str, object]:
+    config: Dict[str, object] = {
+        "model": args.model,
+        "hsi_in_channels": hsi_channels,
+        "num_classes": num_classes,
+    }
+    if hasattr(model, "get_config"):
+        config.update(model.get_config())
+    return config
 
 
 def mps_is_available() -> bool:
@@ -136,7 +159,8 @@ def run_epoch(
             optimizer.zero_grad(set_to_none=True)
 
         with torch.set_grad_enabled(is_train):
-            logits = model(hsi, lidar)
+            outputs = unpack_model_outputs(model(hsi, lidar))
+            logits = outputs["logits"]
             loss = criterion(logits, target)
             if is_train:
                 loss.backward()
@@ -175,7 +199,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", type=str, choices=["baseline", "hct_bgc"], default="baseline")
     parser.add_argument("--patch-size", type=int, default=11)
     parser.add_argument("--pca-components", type=int, default=30)
+    parser.add_argument("--embed-dim", type=int, default=128)
+    parser.add_argument("--num-heads", type=int, default=4)
+    parser.add_argument("--num-layers", type=int, default=2)
     parser.add_argument("--fusion-layers", type=int, default=1)
+    parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--split-mode", type=str, choices=["random", "official"], default="official")
     parser.add_argument("--preprocess-scope", type=str, choices=["full", "train"], default="train")
     parser.add_argument("--train-ratio", type=float, default=0.6)
@@ -254,6 +282,7 @@ def main() -> None:
     )
 
     model = create_model(args, loaders.hsi_channels, loaders.num_classes).to(device)
+    model_config = collect_model_config(model, args, loaders.hsi_channels, loaders.num_classes)
     criterion = nn.CrossEntropyLoss()
     optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
@@ -261,8 +290,11 @@ def main() -> None:
         f"Train/Test batches: {len(loaders.train)}/{len(loaders.test)} | "
         f"HSI channels: {loaders.hsi_channels} | Classes: {loaders.num_classes} | "
         f"split={args.split_mode} | preprocess={args.preprocess_scope} | "
-        f"model={args.model} | fusion_layers={args.fusion_layers}"
+        f"model={args.model}"
     )
+    logger.log(f"Model config: {json.dumps(model_config, sort_keys=True)}")
+    with (output_dir / "model_config.json").open("w", encoding="utf-8") as f:
+        json.dump(model_config, f, indent=2)
 
     best_oa = -1.0
     best_metrics: Dict[str, float] | None = None
@@ -293,6 +325,7 @@ def main() -> None:
                 {
                     "epoch": epoch,
                     "args": vars(args),
+                    "model_config": model_config,
                     "hsi_channels": loaders.hsi_channels,
                     "num_classes": loaders.num_classes,
                     "model_state_dict": model.state_dict(),

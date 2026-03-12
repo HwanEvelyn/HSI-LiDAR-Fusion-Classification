@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from typing import Dict
+
 import torch
 from torch import nn
 
-from .fusion_blocks import BiCTAFusionBlock, GatedFuse
+from .fusion_blocks import BiDirectionalClassTokenAttention, GatedCrossModalFusion
 from .hct_backbone import HsiCnnEncoder, LidarCnnEncoder, Tokenizer
 
 
@@ -20,6 +22,14 @@ class HCT_BGC(nn.Module):
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
+        self.config = {
+            "embed_dim": embed_dim,
+            "num_heads": num_heads,
+            "num_layers": num_layers,
+            "fusion_layers": fusion_layers,
+            "mlp_dim": mlp_dim,
+            "dropout": dropout,
+        }
         self.hsi_encoder = HsiCnnEncoder(hsi_in_channels, embed_dim=embed_dim)
         self.lidar_encoder = LidarCnnEncoder(embed_dim=embed_dim)
 
@@ -52,7 +62,7 @@ class HCT_BGC(nn.Module):
         )
         self.fusion_blocks = nn.ModuleList(
             [
-                BiCTAFusionBlock(
+                BiDirectionalClassTokenAttention(
                     embed_dim=embed_dim,
                     num_heads=num_heads,
                     mlp_dim=mlp_dim,
@@ -61,7 +71,7 @@ class HCT_BGC(nn.Module):
                 for _ in range(fusion_layers)
             ]
         )
-        self.gated_fuse = GatedFuse(embed_dim)
+        self.gated_fuse = GatedCrossModalFusion(embed_dim)
         self.classifier = nn.Sequential(
             nn.LayerNorm(embed_dim),
             nn.Linear(embed_dim, mlp_dim),
@@ -70,7 +80,10 @@ class HCT_BGC(nn.Module):
             nn.Linear(mlp_dim, num_classes),
         )
 
-    def forward(self, hsi: torch.Tensor, lidar: torch.Tensor) -> torch.Tensor:
+    def get_config(self) -> dict[str, int | float]:
+        return dict(self.config)
+
+    def forward(self, hsi: torch.Tensor, lidar: torch.Tensor) -> Dict[str, torch.Tensor]:
         h_feat_map = self.hsi_encoder(hsi)
         l_feat_map = self.lidar_encoder(lidar)
 
@@ -86,4 +99,10 @@ class HCT_BGC(nn.Module):
         h_cls = h_tokens[:, 0]
         l_cls = l_tokens[:, 0]
         fused_token = self.gated_fuse(h_cls, l_cls)
-        return self.classifier(fused_token)
+        logits = self.classifier(fused_token)
+        return {
+            "logits": logits,
+            "h_cls": h_cls,
+            "l_cls": l_cls,
+            "fused_token": fused_token,
+        }
