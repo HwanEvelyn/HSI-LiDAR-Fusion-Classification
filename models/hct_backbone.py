@@ -45,15 +45,28 @@ class LidarCnnEncoder(nn.Module):
 
 
 class Tokenizer(nn.Module):
-    def __init__(self, in_channels: int, embed_dim: int, add_cls_token: bool = True) -> None:
+    def __init__(
+        self,
+        in_channels: int,
+        embed_dim: int,
+        num_spatial_tokens: int,
+        add_cls_token: bool = True,
+        dropout: float = 0.0,
+    ) -> None:
         super().__init__()
         self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=1)
         self.norm = nn.LayerNorm(embed_dim)
+        self.dropout = nn.Dropout(dropout)
         self.add_cls_token = add_cls_token
+        token_count = num_spatial_tokens + int(add_cls_token)
         if add_cls_token:
             self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         else:
             self.register_parameter("cls_token", None)
+        self.pos_embed = nn.Parameter(torch.zeros(1, token_count, embed_dim))
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        if self.cls_token is not None:
+            nn.init.trunc_normal_(self.cls_token, std=0.02)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() != 4:
@@ -67,4 +80,11 @@ class Tokenizer(nn.Module):
             cls_token = self.cls_token.expand(b, -1, -1)
             tokens = torch.cat([cls_token, tokens], dim=1)
 
-        return self.norm(tokens)
+        if tokens.size(1) != self.pos_embed.size(1):
+            raise ValueError(
+                f"Tokenizer 期望 token 数量为 {self.pos_embed.size(1)}，实际得到 {tokens.size(1)}。"
+            )
+
+        tokens = tokens + self.pos_embed
+        tokens = self.norm(tokens)
+        return self.dropout(tokens)

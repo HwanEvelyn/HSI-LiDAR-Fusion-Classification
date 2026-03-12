@@ -47,6 +47,8 @@ def create_model(args: argparse.Namespace | dict, hsi_channels: int, num_classes
             num_layers=args.get("num_layers", 2) if isinstance(args, dict) else args.num_layers,
             fusion_layers=fusion_layers,
             dropout=args.get("dropout", 0.1) if isinstance(args, dict) else args.dropout,
+            patch_size=args.get("patch_size", 11) if isinstance(args, dict) else args.patch_size,
+            disable_gate=args.get("disable_gate", False) if isinstance(args, dict) else args.disable_gate,
         )
     raise ValueError(f"Unsupported model: {model_name}")
 
@@ -202,8 +204,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--embed-dim", type=int, default=128)
     parser.add_argument("--num-heads", type=int, default=4)
     parser.add_argument("--num-layers", type=int, default=2)
-    parser.add_argument("--fusion-layers", type=int, default=1)
+    parser.add_argument("--fusion-layers", type=int, choices=[1, 2, 3], default=1)
     parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--disable-gate", action="store_true")
     parser.add_argument("--split-mode", type=str, choices=["random", "official"], default="official")
     parser.add_argument("--preprocess-scope", type=str, choices=["full", "train"], default="train")
     parser.add_argument("--train-ratio", type=float, default=0.6)

@@ -98,5 +98,14 @@ class GatedCrossModalFusion(nn.Module):
         return gate * cls_h + (1.0 - gate) * cls_l
 
 
+class SimpleAverageFusion(nn.Module):
+    """简单融合基线：直接对 HSI/LiDAR 的 CLS token 做等权平均。"""
+
+    def forward(self, cls_h: torch.Tensor, cls_l: torch.Tensor) -> torch.Tensor:
+        if cls_h.shape != cls_l.shape:
+            raise ValueError("SimpleAverageFusion 期望 cls_h 和 cls_l 形状一致")
+        return 0.5 * (cls_h + cls_l)
+
+
 BiCTAFusionBlock = BiDirectionalClassTokenAttention
 GatedFuse = GatedCrossModalFusion

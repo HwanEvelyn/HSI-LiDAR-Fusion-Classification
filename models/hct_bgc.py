@@ -5,7 +5,7 @@ from typing import Dict
 import torch
 from torch import nn
 
-from .fusion_blocks import BiDirectionalClassTokenAttention, GatedCrossModalFusion
+from .fusion_blocks import BiDirectionalClassTokenAttention, GatedCrossModalFusion, SimpleAverageFusion
 from .hct_backbone import HsiCnnEncoder, LidarCnnEncoder, Tokenizer
 
 
@@ -20,8 +20,13 @@ class HCT_BGC(nn.Module):
         fusion_layers: int = 1,
         mlp_dim: int = 256,
         dropout: float = 0.1,
+        patch_size: int = 11,
+        disable_gate: bool = False,
     ) -> None:
         super().__init__()
+        if fusion_layers not in {1, 2, 3}:
+            raise ValueError(f"HCT_BGC-v1 仅支持 1-3 层 Bi-CTA 堆叠，当前收到 fusion_layers={fusion_layers}")
+        num_spatial_tokens = patch_size * patch_size
         self.config = {
             "embed_dim": embed_dim,
             "num_heads": num_heads,
@@ -29,12 +34,26 @@ class HCT_BGC(nn.Module):
             "fusion_layers": fusion_layers,
             "mlp_dim": mlp_dim,
             "dropout": dropout,
+            "patch_size": patch_size,
+            "num_spatial_tokens": num_spatial_tokens,
+            "disable_gate": disable_gate,
+            "fusion_mode": "average" if disable_gate else "gated",
         }
         self.hsi_encoder = HsiCnnEncoder(hsi_in_channels, embed_dim=embed_dim)
         self.lidar_encoder = LidarCnnEncoder(embed_dim=embed_dim)
 
-        self.hsi_tokenizer = Tokenizer(self.hsi_encoder.out_channels, embed_dim=embed_dim)
-        self.lidar_tokenizer = Tokenizer(self.lidar_encoder.out_channels, embed_dim=embed_dim)
+        self.hsi_tokenizer = Tokenizer(
+            self.hsi_encoder.out_channels,
+            embed_dim=embed_dim,
+            num_spatial_tokens=num_spatial_tokens,
+            dropout=dropout,
+        )
+        self.lidar_tokenizer = Tokenizer(
+            self.lidar_encoder.out_channels,
+            embed_dim=embed_dim,
+            num_spatial_tokens=num_spatial_tokens,
+            dropout=dropout,
+        )
 
         self.h_te = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
@@ -71,7 +90,8 @@ class HCT_BGC(nn.Module):
                 for _ in range(fusion_layers)
             ]
         )
-        self.gated_fuse = GatedCrossModalFusion(embed_dim)
+        self.fusion_mode = "average" if disable_gate else "gated"
+        self.cls_fusion = SimpleAverageFusion() if disable_gate else GatedCrossModalFusion(embed_dim)
         self.classifier = nn.Sequential(
             nn.LayerNorm(embed_dim),
             nn.Linear(embed_dim, mlp_dim),
@@ -98,7 +118,7 @@ class HCT_BGC(nn.Module):
 
         h_cls = h_tokens[:, 0]
         l_cls = l_tokens[:, 0]
-        fused_token = self.gated_fuse(h_cls, l_cls)
+        fused_token = self.cls_fusion(h_cls, l_cls)
         logits = self.classifier(fused_token)
         return {
             "logits": logits,
