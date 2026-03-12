@@ -13,6 +13,8 @@ def set_seed(seed: int) -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
+    if bool(getattr(torch.backends, "mps", None)) and torch.backends.mps.is_available():
+        torch.mps.manual_seed(seed)
 
     if hasattr(torch.backends, "cudnn"):
         torch.backends.cudnn.deterministic = True

@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from dataset.mat_loader import build_official_houston_split, load_houston_hl
 from dataset.patch_dataset import HsiLidarPatchDataset, IndexItem
 from dataset.preprocessing import pca_reduce, pca_reduce_with_mask, zscore_norm, zscore_norm_with_mask
-from train import create_model, resolve_device
+from train import create_model, log_device_info, resolve_device, should_pin_memory
 from utils.logger import SimpleLogger
 from utils.seed import set_seed
 
@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=str, default="results/run_baseline_compare/best.pth")
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--region", type=str, choices=["test", "labeled"], default="labeled")
-    parser.add_argument("--device", type=str, choices=["auto", "cuda", "cpu"], default="auto")
+    parser.add_argument("--device", type=str, choices=["auto", "cuda", "mps", "cpu"], default="auto")
     return parser.parse_args()
 
 
@@ -83,6 +83,7 @@ def main() -> None:
 
     device = resolve_device(args.device)
     logger.log(f"Using device: {device}")
+    log_device_info(logger, device)
 
     hsi, lidar, train_gt, test_gt = build_preprocessed_data(train_args)
     target_map = test_gt if args.region == "test" else np.where(train_gt > 0, train_gt, test_gt)
@@ -99,7 +100,7 @@ def main() -> None:
         batch_size=int(train_args["batch_size"]),
         shuffle=False,
         num_workers=int(train_args["num_workers"]),
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=should_pin_memory(device),
     )
 
     model = create_model(train_args, int(checkpoint["hsi_channels"]), int(checkpoint["num_classes"])).to(device)

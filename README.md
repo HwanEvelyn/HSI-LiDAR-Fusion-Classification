@@ -38,3 +38,19 @@
 - 加入 Bi-CTA 和 Gated Fusion，跑第一版主模型 
 - base 环境改成虚拟环境 + cpu 跑改为 cuda 跑
 - 补评估、出第一张分类图、写周报
+
+## macOS Apple Silicon 说明
+- M 系列 Mac 不使用 CUDA，PyTorch 应直接安装官方默认包并使用 `mps` 加速。
+- 建议命令：
+  ```bash
+  python3 -m venv .venv
+  source .venv/bin/activate
+  python3 -m pip install --upgrade pip
+  python3 -m pip install torch torchvision torchaudio
+  python3 -m pip install -r requirements.txt
+  ```
+- 训练时可显式指定：
+  ```bash
+  python3 train.py --device mps
+  ```
+- 也可以保持默认 `--device auto`，脚本会按 `cuda -> mps -> cpu` 顺序自动选择。

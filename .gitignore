@@ -9,3 +9,4 @@ venv/
 *.npz
 *.npy
 results/
+.DS_Store

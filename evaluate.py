@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from train import build_dataloaders, create_model, evaluate_split, resolve_device
+from train import build_dataloaders, create_model, evaluate_split, log_device_info, resolve_device
 from utils.logger import SimpleLogger
 from utils.seed import set_seed
 
@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate a trained HSI-LiDAR baseline checkpoint")
     parser.add_argument("--checkpoint", type=str, default="results/run_baseline/best.pth")
     parser.add_argument("--output-dir", type=str, default=None)
-    parser.add_argument("--device", type=str, choices=["auto", "cuda", "cpu"], default="auto")
+    parser.add_argument("--device", type=str, choices=["auto", "cuda", "mps", "cpu"], default="auto")
     return parser.parse_args()
 
 
@@ -37,9 +37,7 @@ def main() -> None:
 
     device = resolve_device(args.device)
     logger.log(f"Using device: {device}")
-    logger.log(f"PyTorch version: {torch.__version__} | CUDA build: {torch.version.cuda}")
-    if device.type == "cuda":
-        logger.log(f"CUDA device name: {torch.cuda.get_device_name(0)}")
+    log_device_info(logger, device)
 
     loaders = build_dataloaders(
         data_root=train_args["data_root"],
@@ -51,6 +49,7 @@ def main() -> None:
         seed=int(train_args["seed"]),
         split_mode=str(train_args["split_mode"]),
         preprocess_scope=str(train_args["preprocess_scope"]),
+        device=device,
     )
 
     model = create_model(train_args, int(checkpoint["hsi_channels"]), int(checkpoint["num_classes"])).to(device)

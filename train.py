@@ -47,6 +47,14 @@ def create_model(args: argparse.Namespace | dict, hsi_channels: int, num_classes
     raise ValueError(f"Unsupported model: {model_name}")
 
 
+def mps_is_available() -> bool:
+    return bool(getattr(torch.backends, "mps", None)) and torch.backends.mps.is_available()
+
+
+def should_pin_memory(device: torch.device) -> bool:
+    return device.type == "cuda"
+
+
 def build_dataloaders(
     data_root: str,
     patch_size: int,
@@ -57,6 +65,7 @@ def build_dataloaders(
     seed: int,
     split_mode: str,
     preprocess_scope: str,
+    device: torch.device,
 ) -> SplitLoaders:
     data = load_houston_hl(data_root)
 
@@ -90,7 +99,7 @@ def build_dataloaders(
     loader_kwargs = {
         "batch_size": batch_size,
         "num_workers": num_workers,
-        "pin_memory": torch.cuda.is_available(),
+        "pin_memory": should_pin_memory(device),
     }
     train_loader = DataLoader(train_dataset_full, shuffle=True, drop_last=False, **loader_kwargs)
     test_loader = DataLoader(test_dataset, shuffle=False, drop_last=False, **loader_kwargs)
@@ -177,7 +186,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-dir", type=str, default="results/run_baseline")
-    parser.add_argument("--device", type=str, choices=["auto", "cuda", "cpu"], default="auto")
+    parser.add_argument("--device", type=str, choices=["auto", "cuda", "mps", "cpu"], default="auto")
     return parser.parse_args()
 
 
@@ -191,7 +200,28 @@ def resolve_device(device_arg: str) -> torch.device:
                 "Install a CUDA-enabled PyTorch build and check your GPU driver."
             )
         return torch.device("cuda")
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device_arg == "mps":
+        if not mps_is_available():
+            raise RuntimeError(
+                "MPS was requested with --device mps, but torch.backends.mps.is_available() is False. "
+                "Install a recent macOS-compatible PyTorch build and run on Apple Silicon."
+            )
+        return torch.device("mps")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if mps_is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def log_device_info(logger: SimpleLogger, device: torch.device) -> None:
+    logger.log(
+        f"PyTorch version: {torch.__version__} | CUDA build: {torch.version.cuda} | "
+        f"MPS available: {mps_is_available()}"
+    )
+    if device.type == "cuda":
+        logger.log(f"CUDA device name: {torch.cuda.get_device_name(0)}")
+        torch.backends.cudnn.benchmark = True
 
 
 def main() -> None:
@@ -208,10 +238,7 @@ def main() -> None:
 
     device = resolve_device(args.device)
     logger.log(f"Using device: {device}")
-    # logger.log(f"PyTorch version: {torch.__version__} | CUDA build: {torch.version.cuda}")
-    if device.type == "cuda":
-        # logger.log(f"CUDA device name: {torch.cuda.get_device_name(0)}")
-        torch.backends.cudnn.benchmark = True
+    log_device_info(logger, device)
 
     loaders = build_dataloaders(
         data_root=str(data_root),
@@ -223,6 +250,7 @@ def main() -> None:
         seed=args.seed,
         split_mode=args.split_mode,
         preprocess_scope=args.preprocess_scope,
+        device=device,
     )
 
     model = create_model(args, loaders.hsi_channels, loaders.num_classes).to(device)
