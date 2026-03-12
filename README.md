@@ -32,4 +32,9 @@
   - 官方 split + train-only preprocess: OA 0.7145
   - 官方 split + full-scene preprocess: OA 0.6831
   - 随机像素 split + full-scene preprocess: OA 0.8838
-
+## 2026/3/9进度日志
+- 把 baseline 训练和评估真正跑通
+- 开始实现 HCT-BGC 的主干骨架（先不加对比学习）
+- 加入 Bi-CTA 和 Gated Fusion，跑第一版主模型 
+- base 环境改成虚拟环境 + cpu 跑改为 cuda 跑
+- 补评估、出第一张分类图、写周报
