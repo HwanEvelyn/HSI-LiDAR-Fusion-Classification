@@ -1,3 +1,8 @@
+"""
+数据读取
+输入：data_root
+输出：MatData(......)
+"""
 from __future__ import annotations
 
 import logging

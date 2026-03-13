@@ -1,3 +1,8 @@
+"""
+模态内 Transformer Encoder（分 HSI 和 LiDAR），先各自学习本模态内部的长程依赖，再做跨模态融合（fusion_blocks.py）
+输入输出：两路 token 序列(B, 1+p^2, D)
+
+"""
 from __future__ import annotations
 
 from typing import Dict
@@ -92,6 +97,7 @@ class HCT_BGC(nn.Module):
         )
         self.fusion_mode = "average" if disable_gate else "gated"
         self.cls_fusion = SimpleAverageFusion() if disable_gate else GatedCrossModalFusion(embed_dim)
+        # 分类头：输入 fused_token(B, D),输出 logits(B, num_classes)
         self.classifier = nn.Sequential(
             nn.LayerNorm(embed_dim),
             nn.Linear(embed_dim, mlp_dim),
@@ -121,8 +127,8 @@ class HCT_BGC(nn.Module):
         fused_token = self.cls_fusion(h_cls, l_cls)
         logits = self.classifier(fused_token)
         return {
-            "logits": logits,
-            "h_cls": h_cls,
-            "l_cls": l_cls,
-            "fused_token": fused_token,
+            "logits": logits,   # 最终分类分数
+            "h_cls": h_cls,     # hsi 的最终摘要特征
+            "l_cls": l_cls,     # lidar。。
+            "fused_token": fused_token,     # 融合后的联合表征
         }

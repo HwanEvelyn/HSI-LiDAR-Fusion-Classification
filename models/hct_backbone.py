@@ -1,3 +1,9 @@
+"""
+HSI 分支 + LiDAR 分支 + token 化骨架
+作用是把：
+    1.把原始的二维/多通道图像输入编码成特称图 feature map（HSI Encoder, LiDAR Encoder）
+    2.把上一步得到的特征图转换成 Transformer 可以接收的 token 序列
+"""
 from __future__ import annotations
 
 import torch
@@ -5,6 +11,11 @@ from torch import nn
 
 
 class HsiCnnEncoder(nn.Module):
+    """
+    输入：（B, C, H, W）
+    输出：（B, 128, H, W）
+    两层 "Conv2d + BN + Relu"
+    """
     def __init__(self, in_channels: int, embed_dim: int = 128) -> None:
         super().__init__()
         hidden_dim = embed_dim // 2
@@ -25,6 +36,10 @@ class HsiCnnEncoder(nn.Module):
 
 
 class LidarCnnEncoder(nn.Module):
+    """
+    输入：（B, 1, H, W）
+    输出：（B, 128, H, W）
+    """
     def __init__(self, in_channels: int = 1, embed_dim: int = 128) -> None:
         super().__init__()
         hidden_dim = embed_dim // 2
@@ -45,12 +60,16 @@ class LidarCnnEncoder(nn.Module):
 
 
 class Tokenizer(nn.Module):
+    """
+    输入二维 feature map：（B, C, H, W）
+    输入 token 序列：（B, N, D）, N 为 token 数量（H * W），D 为 token 维度，是 embed_dim
+    """
     def __init__(
         self,
         in_channels: int,
         embed_dim: int,
-        num_spatial_tokens: int,
-        add_cls_token: bool = True,
+        num_spatial_tokens: int,     # 空间 token 的数量，通常是 H * W
+        add_cls_token: bool = True,  # 是否添加一个额外分类的 cls token
         dropout: float = 0.0,
     ) -> None:
         super().__init__()

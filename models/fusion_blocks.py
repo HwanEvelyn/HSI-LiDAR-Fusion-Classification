@@ -1,3 +1,6 @@
+"""
+两路特征融合：Bi-CTA + gated fusion
+"""
 from __future__ import annotations
 
 import torch
@@ -56,7 +59,11 @@ class FeedForwardBlock(nn.Module):
 
 
 class BiDirectionalClassTokenAttention(nn.Module):
-    """Bi-CTA 模块：通过双向 CLS token 交互完成跨模态上下文交换。"""
+    """
+    Bi-CTA 模块：通过双向 CLS token 交互完成跨模态上下文交换。
+    输入：h_tokens、 l_tokens(B, N, D)
+    输出：更新后的两路 token 序列(B, N, D)
+    """
 
     def __init__(self, embed_dim: int, num_heads: int, mlp_dim: int, dropout: float = 0.1) -> None:
         super().__init__()
@@ -85,7 +92,11 @@ class BiDirectionalClassTokenAttention(nn.Module):
 
 
 class GatedCrossModalFusion(nn.Module):
-    """Gated Fuse 模块：学习逐维门控权重来融合 HSI/LiDAR 的 CLS token。"""
+    """
+    Gated Fuse 模块：学习逐维门控权重来融合 HSI/LiDAR 的 CLS token。
+    - g = sigmoid(Wg [h_cls; l_cls])
+    - fused = g * h_cls + (1-g) * l_cls
+    """
 
     def __init__(self, embed_dim: int) -> None:
         super().__init__()

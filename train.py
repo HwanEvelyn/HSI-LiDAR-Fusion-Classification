@@ -204,6 +204,7 @@ def run_epoch(
                 if "h_cls" not in outputs or "l_cls" not in outputs:
                     raise KeyError("启用对比损失时，模型输出必须包含 'h_cls' 和 'l_cls'")
                 contrastive_loss = info_nce_loss(outputs["h_cls"], outputs["l_cls"], temperature=temperature)
+            # 总损失 = CE + weight * Contrative
             loss = ce_loss + contrastive_weight * contrastive_loss
             if is_train:
                 loss.backward()
@@ -230,7 +231,7 @@ def run_epoch(
         y_pred=y_pred,
     )
 
-
+# 评估
 def evaluate_split(
     model: nn.Module,
     loader: DataLoader,

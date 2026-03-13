@@ -51,6 +51,9 @@ def zscore_norm_with_mask(
     mask: np.ndarray | None = None,
     eps: float = 1e-6,
 ) -> tuple[np.ndarray, ZScoreStats]:
+    """
+    用训练像素统计均值方差
+    """
     stats = fit_zscore(x, mask=mask, eps=eps)
     return apply_zscore(x, stats), stats
 
@@ -97,6 +100,9 @@ def pca_reduce_with_mask(
     n_components: int,
     mask: np.ndarray | None = None,
 ) -> PCAResult:
+    """
+    只用训练像素拟合 PCA，再投影整景
+    """
     x = np.asarray(x, dtype=np.float32)
     if mask is not None:
         mask = np.asarray(mask, dtype=bool)
