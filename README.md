@@ -58,3 +58,12 @@
   python3 train.py --device mps
   ```
 - 也可以保持默认 `--device auto`，脚本会按 `cuda -> mps -> cpu` 顺序自动选择。
+## 2026/3/13进度日志
+- 整理先前代码逻辑
+- 验证集选模型，测试集只报最终结果，原先只划分了 train / test ，现在加上 val
+- 最佳模型的选用开始是基于 best_oa，现在改为基于 val 的验证
+- 做最关键的 3 组消融实验：
+  1.mac的mps加速报错，改为cpu
+  2.val划分和train高度重叠，修正
+  3.训练结束时把最终测试集的混淆矩阵和每类精度落盘
+  4.加一个汇总脚本，把各实验目录的 best_metrics.json 自动整理成 ablation markdown 表，scripts/summarize_ablation.py，直接从各实验目录生成 markdown 表
