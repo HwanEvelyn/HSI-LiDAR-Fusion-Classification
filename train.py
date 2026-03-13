@@ -14,12 +14,12 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader
 
 from dataset.mat_loader import build_official_houston_split, load_houston_hl
-from dataset.patch_dataset import HsiLidarPatchDataset, build_index_three_way, split_items_by_ratio
+from dataset.patch_dataset import HsiLidarPatchDataset, build_index_three_way, split_items_spatial_holdout
 from dataset.preprocessing import pca_reduce, pca_reduce_with_mask, zscore_norm, zscore_norm_with_mask
 from models.baseline_cnn import BaselineFusionNet
 from models.hct_bgc import HCT_BGC
 from utils.logger import SimpleLogger
-from utils.metrics import confusion_matrix, oa_aa_kappa
+from utils.metrics import confusion_matrix, oa_aa_kappa, per_class_accuracy
 from utils.seed import set_seed
 
 
@@ -74,6 +74,7 @@ def unpack_model_outputs(outputs: torch.Tensor | Dict[str, torch.Tensor]) -> Dic
 
 
 def collect_model_config(model: nn.Module, args: argparse.Namespace, hsi_channels: int, num_classes: int) -> Dict[str, object]:
+    effective_val_spatial_buffer = args.val_spatial_buffer if args.val_spatial_buffer >= 0 else args.patch_size // 2
     config: Dict[str, object] = {
         "model": args.model,
         "hsi_in_channels": hsi_channels,
@@ -85,6 +86,7 @@ def collect_model_config(model: nn.Module, args: argparse.Namespace, hsi_channel
         "selection_metric": args.selection_metric,
         "preprocess_scope": args.preprocess_scope,
         "split_mode": args.split_mode,
+        "val_spatial_buffer": effective_val_spatial_buffer,
     }
     if hasattr(model, "get_config"):
         config.update(model.get_config())
@@ -128,14 +130,16 @@ def build_dataloaders(
     preprocess_scope: str,
     device: torch.device,
     val_ratio: float,
+    val_spatial_buffer: int,
 ) -> SplitLoaders:
     data = load_houston_hl(data_root)
 
     if split_mode == "official":
         official_train_items, test_items, num_classes = build_official_houston_split(data)
-        train_items, val_items = split_items_by_ratio(
+        train_items, val_items = split_items_spatial_holdout(
             official_train_items,
             holdout_ratio=val_ratio,
+            buffer_radius=val_spatial_buffer,
             seed=seed,
         )
     else:
@@ -289,6 +293,34 @@ def get_selection_score(metrics: Dict[str, float], selection_metric: str) -> flo
     return float(metrics[metric_name])
 
 
+def save_final_eval_artifacts(output_dir: Path, metrics: Dict[str, float]) -> None:
+    cm = np.asarray(metrics["confusion_matrix"], dtype=np.int64)
+    class_acc = per_class_accuracy(cm)
+
+    with (output_dir / "test_confusion_matrix.json").open("w", encoding="utf-8") as f:
+        json.dump(cm.tolist(), f, indent=2)
+
+    with (output_dir / "test_confusion_matrix.csv").open("w", encoding="utf-8") as f:
+        for row in cm.tolist():
+            f.write(",".join(str(value) for value in row) + "\n")
+
+    per_class_payload = [
+        {
+            "class_index": idx,
+            "accuracy": float(acc),
+            "support": int(cm[idx].sum()),
+        }
+        for idx, acc in enumerate(class_acc.tolist())
+    ]
+    with (output_dir / "test_per_class_accuracy.json").open("w", encoding="utf-8") as f:
+        json.dump(per_class_payload, f, indent=2)
+
+    with (output_dir / "test_per_class_accuracy.csv").open("w", encoding="utf-8") as f:
+        f.write("class_index,accuracy,support\n")
+        for item in per_class_payload:
+            f.write(f"{item['class_index']},{item['accuracy']:.6f},{item['support']}\n")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Minimal HSI-LiDAR baseline training")
     parser.add_argument("--data-root", type=str, default="data/raw/Houston 2013/2013_DFTC")
@@ -308,6 +340,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--preprocess-scope", type=str, choices=["full", "train"], default="train")
     parser.add_argument("--train-ratio", type=float, default=0.6)
     parser.add_argument("--val-ratio", type=float, default=0.2)
+    parser.add_argument("--val-spatial-buffer", type=int, default=-1)
     parser.add_argument("--selection-metric", type=str, choices=["val_oa", "val_kappa"], default="val_oa")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=10)
@@ -354,6 +387,29 @@ def log_device_info(logger: SimpleLogger, device: torch.device) -> None:
         torch.backends.cudnn.benchmark = True
 
 
+def maybe_fallback_from_mps(model: nn.Module, device: torch.device, logger: SimpleLogger) -> torch.device:
+    if device.type != "mps":
+        return device
+    unsupported_mps_modules = (
+        nn.Conv3d,
+        nn.MultiheadAttention,
+        nn.TransformerEncoder,
+        nn.TransformerEncoderLayer,
+    )
+    hit_types = sorted(
+        {type(module).__name__ for module in model.modules() if isinstance(module, unsupported_mps_modules)}
+    )
+    if hit_types:
+        logger.log(
+            "Warning: detected MPS-unstable modules in the selected model: "
+            f"{', '.join(hit_types)}. "
+            "PyTorch MPS on Apple Silicon is unstable for this path and may abort at the native runtime level. "
+            "Falling back to CPU."
+        )
+        return torch.device("cpu")
+    return device
+
+
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
@@ -387,9 +443,14 @@ def main() -> None:
         preprocess_scope=args.preprocess_scope,
         device=device,
         val_ratio=args.val_ratio,
+        val_spatial_buffer=args.val_spatial_buffer if args.val_spatial_buffer >= 0 else args.patch_size // 2,
     )
 
-    model = create_model(args, loaders.hsi_channels, loaders.num_classes).to(device)
+    model = create_model(args, loaders.hsi_channels, loaders.num_classes)
+    device = maybe_fallback_from_mps(model, device, logger)
+    if device.type == "cpu":
+        logger.log("Using device: cpu")
+    model = model.to(device)
     model_config = collect_model_config(model, args, loaders.hsi_channels, loaders.num_classes)
     criterion = nn.CrossEntropyLoss()
     optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -468,6 +529,7 @@ def main() -> None:
     checkpoint = torch.load(output_dir / "best.pth", map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     test_metrics = evaluate_split(model, loaders.test, criterion, device, num_classes=loaders.num_classes)
+    save_final_eval_artifacts(output_dir, test_metrics)
     best_metrics.update(
         {
             "test_loss": float(test_metrics["loss"]),

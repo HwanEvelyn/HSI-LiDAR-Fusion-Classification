@@ -57,3 +57,13 @@ def oa_aa_kappa(cm: np.ndarray) -> Dict[str, float]:
         kappa = float((oa - pe) / (1.0 - pe))    # kappa = (oa - pe) / (1 - pe)  OA 减去随机预测的准确率，除以 1 减去随机预测的准确率。考虑了“随机猜中”的影响。
 
     return {"oa": oa, "aa": aa, "kappa": kappa}
+
+
+def per_class_accuracy(cm: np.ndarray) -> np.ndarray:
+    """
+    从混淆矩阵计算每一类的分类准确率。
+    """
+    cm = np.asarray(cm, dtype=np.float64)
+    diag = np.diag(cm)
+    row_sum = cm.sum(axis=1)
+    return np.divide(diag, row_sum, out=np.zeros_like(diag), where=row_sum > 0)

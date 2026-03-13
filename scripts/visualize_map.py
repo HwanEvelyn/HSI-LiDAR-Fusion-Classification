@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from dataset.mat_loader import build_official_houston_split, load_houston_hl
 from dataset.patch_dataset import HsiLidarPatchDataset, IndexItem
 from dataset.preprocessing import pca_reduce, pca_reduce_with_mask, zscore_norm, zscore_norm_with_mask
-from train import create_model, log_device_info, resolve_device, should_pin_memory
+from train import create_model, log_device_info, maybe_fallback_from_mps, resolve_device, should_pin_memory
 from utils.logger import SimpleLogger
 from utils.seed import set_seed
 
@@ -95,6 +95,11 @@ def main() -> None:
         items=items,
         patch_size=int(train_args["patch_size"]),
     )
+    model = create_model(train_args, int(checkpoint["hsi_channels"]), int(checkpoint["num_classes"]))
+    device = maybe_fallback_from_mps(model, device, logger)
+    if device.type == "cpu":
+        logger.log("Using device: cpu")
+
     loader = DataLoader(
         dataset,
         batch_size=int(train_args["batch_size"]),
@@ -103,7 +108,7 @@ def main() -> None:
         pin_memory=should_pin_memory(device),
     )
 
-    model = create_model(train_args, int(checkpoint["hsi_channels"]), int(checkpoint["num_classes"])).to(device)
+    model = model.to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 

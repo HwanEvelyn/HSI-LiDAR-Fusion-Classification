@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from train import build_dataloaders, create_model, evaluate_split, log_device_info, resolve_device
+from train import build_dataloaders, create_model, evaluate_split, log_device_info, maybe_fallback_from_mps, resolve_device
 from utils.logger import SimpleLogger
 from utils.seed import set_seed
 
@@ -52,7 +52,11 @@ def main() -> None:
         device=device,
     )
 
-    model = create_model(train_args, int(checkpoint["hsi_channels"]), int(checkpoint["num_classes"])).to(device)
+    model = create_model(train_args, int(checkpoint["hsi_channels"]), int(checkpoint["num_classes"]))
+    device = maybe_fallback_from_mps(model, device, logger)
+    if device.type == "cpu":
+        logger.log("Using device: cpu")
+    model = model.to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     criterion = nn.CrossEntropyLoss()
 

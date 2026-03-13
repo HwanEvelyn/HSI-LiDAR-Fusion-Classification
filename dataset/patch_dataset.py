@@ -94,6 +94,99 @@ def split_items_by_ratio(
     return first_split, second_split
 
 
+def split_items_spatial_holdout(
+    items: List[IndexItem],
+    holdout_ratio: float,
+    buffer_radius: int,
+    seed: int = 0,
+    block_size: int | None = None,
+) -> Tuple[List[IndexItem], List[IndexItem]]:
+    """
+    按空间块划分 train/val，并从 train 中剔除靠近 val 的样本，避免 patch 重叠泄漏。
+    """
+    if not 0.0 < holdout_ratio < 1.0:
+        raise ValueError("holdout_ratio 必须在 (0, 1) 区间内")
+    if buffer_radius < 0:
+        raise ValueError("buffer_radius 必须 >= 0")
+
+    rng = np.random.default_rng(seed)
+    if block_size is None:
+        block_size = max(2 * buffer_radius + 1, 1)
+
+    item_array = np.asarray([(item.r, item.c, item.y) for item in items], dtype=np.int32)
+    rows = item_array[:, 0]
+    cols = item_array[:, 1]
+    labels = item_array[:, 2]
+
+    block_rows = rows // block_size
+    block_cols = cols // block_size
+    block_ids = np.stack([block_rows, block_cols], axis=1)
+
+    block_to_indices: dict[tuple[int, int], List[int]] = {}
+    for idx, block_id in enumerate(block_ids):
+        key = (int(block_id[0]), int(block_id[1]))
+        block_to_indices.setdefault(key, []).append(idx)
+
+    all_blocks = list(block_to_indices.keys())
+    rng.shuffle(all_blocks)
+    target_holdout = max(1, int(round(len(items) * holdout_ratio)))
+
+    selected_blocks: set[tuple[int, int]] = set()
+    classes = sorted(set(int(label) for label in labels.tolist()))
+    for cls in classes:
+        candidate_blocks = [
+            block_id for block_id in all_blocks
+            if any(labels[idx] == cls for idx in block_to_indices[block_id])
+        ]
+        rng.shuffle(candidate_blocks)
+        for block_id in candidate_blocks:
+            if block_id not in selected_blocks:
+                selected_blocks.add(block_id)
+                break
+
+    holdout_count = sum(len(block_to_indices[block_id]) for block_id in selected_blocks)
+    for block_id in all_blocks:
+        if holdout_count >= target_holdout:
+            break
+        if block_id in selected_blocks:
+            continue
+        selected_blocks.add(block_id)
+        holdout_count += len(block_to_indices[block_id])
+
+    val_indices = sorted(idx for block_id in selected_blocks for idx in block_to_indices[block_id])
+    val_mask = np.zeros(len(items), dtype=bool)
+    val_mask[val_indices] = True
+
+    val_coords = item_array[val_mask][:, :2]
+    train_candidate_indices = np.flatnonzero(~val_mask)
+    train_candidate_coords = item_array[train_candidate_indices][:, :2]
+
+    if len(val_coords) == 0 or len(train_candidate_coords) == 0:
+        raise RuntimeError("空间划分失败，train 或 val 为空")
+
+    # Chebyshev 距离 <= buffer_radius 表示 patch 会发生重叠或紧邻。
+    keep_mask = np.ones(len(train_candidate_indices), dtype=bool)
+    if buffer_radius > 0:
+        nearest = np.full(len(train_candidate_indices), fill_value=np.iinfo(np.int32).max, dtype=np.int32)
+        chunk_size = 512
+        for start in range(0, len(val_coords), chunk_size):
+            val_chunk = val_coords[start : start + chunk_size]
+            diff = np.abs(train_candidate_coords[:, None, :] - val_chunk[None, :, :])
+            chebyshev = diff.max(axis=2)
+            nearest = np.minimum(nearest, chebyshev.min(axis=1))
+        keep_mask = nearest > buffer_radius
+
+    filtered_train_indices = train_candidate_indices[keep_mask]
+    train_items = [items[idx] for idx in filtered_train_indices.tolist()]
+    val_items = [items[idx] for idx in val_indices]
+
+    rng.shuffle(train_items)
+    rng.shuffle(val_items)
+    if len(train_items) == 0 or len(val_items) == 0:
+        raise RuntimeError("空间划分后 train 或 val 为空，请调整 holdout_ratio 或 buffer_radius")
+    return train_items, val_items
+
+
 def build_index_three_way(
     gt: np.ndarray,
     train_ratio: float,
