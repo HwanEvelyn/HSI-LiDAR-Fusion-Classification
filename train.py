@@ -14,7 +14,7 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader
 
 from dataset.mat_loader import build_official_houston_split, load_houston_hl
-from dataset.patch_dataset import HsiLidarPatchDataset, bulid_index
+from dataset.patch_dataset import HsiLidarPatchDataset, build_index_three_way, split_items_by_ratio
 from dataset.preprocessing import pca_reduce, pca_reduce_with_mask, zscore_norm, zscore_norm_with_mask
 from models.baseline_cnn import BaselineFusionNet
 from models.hct_bgc import HCT_BGC
@@ -26,9 +26,11 @@ from utils.seed import set_seed
 @dataclass
 class SplitLoaders:
     train: DataLoader
+    val: DataLoader
     test: DataLoader
     hsi_channels: int
     num_classes: int
+    split_sizes: Dict[str, int]
 
 
 @dataclass
@@ -79,6 +81,10 @@ def collect_model_config(model: nn.Module, args: argparse.Namespace, hsi_channel
         "use_contrastive": args.use_contrastive,
         "contrastive_weight": args.contrastive_weight,
         "temperature": args.temperature,
+        "val_ratio": args.val_ratio,
+        "selection_metric": args.selection_metric,
+        "preprocess_scope": args.preprocess_scope,
+        "split_mode": args.split_mode,
     }
     if hasattr(model, "get_config"):
         config.update(model.get_config())
@@ -121,16 +127,28 @@ def build_dataloaders(
     split_mode: str,
     preprocess_scope: str,
     device: torch.device,
+    val_ratio: float,
 ) -> SplitLoaders:
     data = load_houston_hl(data_root)
 
     if split_mode == "official":
-        train_items, test_items, num_classes = build_official_houston_split(data)
+        official_train_items, test_items, num_classes = build_official_houston_split(data)
+        train_items, val_items = split_items_by_ratio(
+            official_train_items,
+            holdout_ratio=val_ratio,
+            seed=seed,
+        )
     else:
-        train_items, test_items, num_classes = bulid_index(
+        train_items, val_items, test_items, num_classes = build_index_three_way(
             data.gt,
             train_ratio=train_ratio,
+            val_ratio=val_ratio,
             seed=seed,
+        )
+
+    if len(train_items) == 0 or len(val_items) == 0 or len(test_items) == 0:
+        raise RuntimeError(
+            f"数据划分失败，得到的样本数为 train={len(train_items)}, val={len(val_items)}, test={len(test_items)}"
         )
 
     train_mask = np.zeros_like(data.gt, dtype=bool)
@@ -149,6 +167,7 @@ def build_dataloaders(
             hsi = pca_reduce(hsi, n_components=pca_components).x_pca
 
     train_dataset_full = HsiLidarPatchDataset(hsi, lidar, train_items, patch_size)
+    val_dataset = HsiLidarPatchDataset(hsi, lidar, val_items, patch_size)
     test_dataset = HsiLidarPatchDataset(hsi, lidar, test_items, patch_size)
 
     loader_kwargs = {
@@ -157,13 +176,20 @@ def build_dataloaders(
         "pin_memory": should_pin_memory(device),
     }
     train_loader = DataLoader(train_dataset_full, shuffle=True, drop_last=False, **loader_kwargs)
+    val_loader = DataLoader(val_dataset, shuffle=False, drop_last=False, **loader_kwargs)
     test_loader = DataLoader(test_dataset, shuffle=False, drop_last=False, **loader_kwargs)
 
     return SplitLoaders(
         train=train_loader,
+        val=val_loader,
         test=test_loader,
         hsi_channels=hsi.shape[-1],
         num_classes=num_classes,
+        split_sizes={
+            "train": len(train_items),
+            "val": len(val_items),
+            "test": len(test_items),
+        },
     )
 
 
@@ -256,6 +282,13 @@ def evaluate_split(
     return metrics
 
 
+def get_selection_score(metrics: Dict[str, float], selection_metric: str) -> float:
+    if selection_metric not in {"val_oa", "val_kappa"}:
+        raise ValueError(f"Unsupported selection metric: {selection_metric}")
+    metric_name = selection_metric.replace("val_", "")
+    return float(metrics[metric_name])
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Minimal HSI-LiDAR baseline training")
     parser.add_argument("--data-root", type=str, default="data/raw/Houston 2013/2013_DFTC")
@@ -274,6 +307,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split-mode", type=str, choices=["random", "official"], default="official")
     parser.add_argument("--preprocess-scope", type=str, choices=["full", "train"], default="train")
     parser.add_argument("--train-ratio", type=float, default=0.6)
+    parser.add_argument("--val-ratio", type=float, default=0.2)
+    parser.add_argument("--selection-metric", type=str, choices=["val_oa", "val_kappa"], default="val_oa")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -337,6 +372,8 @@ def main() -> None:
     device = resolve_device(args.device)
     logger.log(f"Using device: {device}")
     log_device_info(logger, device)
+    if args.preprocess_scope != "train":
+        logger.log("Warning: preprocess_scope=full 会使用全图统计量，存在数据泄漏风险；论文实验建议使用 preprocess_scope=train。")
 
     loaders = build_dataloaders(
         data_root=str(data_root),
@@ -349,6 +386,7 @@ def main() -> None:
         split_mode=args.split_mode,
         preprocess_scope=args.preprocess_scope,
         device=device,
+        val_ratio=args.val_ratio,
     )
 
     model = create_model(args, loaders.hsi_channels, loaders.num_classes).to(device)
@@ -357,16 +395,17 @@ def main() -> None:
     optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     logger.log(
-        f"Train/Test batches: {len(loaders.train)}/{len(loaders.test)} | "
+        f"Train/Val/Test batches: {len(loaders.train)}/{len(loaders.val)}/{len(loaders.test)} | "
+        f"Train/Val/Test samples: {loaders.split_sizes['train']}/{loaders.split_sizes['val']}/{loaders.split_sizes['test']} | "
         f"HSI channels: {loaders.hsi_channels} | Classes: {loaders.num_classes} | "
         f"split={args.split_mode} | preprocess={args.preprocess_scope} | "
-        f"model={args.model}"
+        f"model={args.model} | select_by={args.selection_metric}"
     )
     logger.log(f"Model config: {json.dumps(model_config, sort_keys=True)}")
     with (output_dir / "model_config.json").open("w", encoding="utf-8") as f:
         json.dump(model_config, f, indent=2)
 
-    best_oa = -1.0
+    best_score = float("-inf")
     best_metrics: Dict[str, float] | None = None
 
     for epoch in range(1, args.epochs + 1):
@@ -380,29 +419,32 @@ def main() -> None:
             temperature=args.temperature,
             optimizer=optimizer,
         )
-        test_metrics = evaluate_split(model, loaders.test, criterion, device, num_classes=loaders.num_classes)
+        val_metrics = evaluate_split(model, loaders.val, criterion, device, num_classes=loaders.num_classes)
         logger.log(
             f"Epoch {epoch:03d} | "
             f"train_ce={train_stats.ce_loss:.4f} | "
             f"train_contrastive={train_stats.contrastive_loss:.4f} | "
             f"train_total={train_stats.total_loss:.4f} | "
-            f"test_loss={test_metrics['loss']:.4f} | "
-            f"test_oa={test_metrics['oa']:.4f} | "
-            f"test_aa={test_metrics['aa']:.4f} | "
-            f"test_kappa={test_metrics['kappa']:.4f}"
+            f"val_loss={val_metrics['loss']:.4f} | "
+            f"val_oa={val_metrics['oa']:.4f} | "
+            f"val_aa={val_metrics['aa']:.4f} | "
+            f"val_kappa={val_metrics['kappa']:.4f}"
         )
 
-        if test_metrics["oa"] > best_oa:
-            best_oa = float(test_metrics["oa"])
+        current_score = get_selection_score(val_metrics, args.selection_metric)
+        if current_score > best_score:
+            best_score = current_score
             best_metrics = {
                 "epoch": epoch,
                 "train_ce": float(train_stats.ce_loss),
                 "train_contrastive": float(train_stats.contrastive_loss),
                 "train_total": float(train_stats.total_loss),
-                "test_loss": float(test_metrics["loss"]),
-                "oa": float(test_metrics["oa"]),
-                "aa": float(test_metrics["aa"]),
-                "kappa": float(test_metrics["kappa"]),
+                "val_loss": float(val_metrics["loss"]),
+                "val_oa": float(val_metrics["oa"]),
+                "val_aa": float(val_metrics["aa"]),
+                "val_kappa": float(val_metrics["kappa"]),
+                "selection_metric": args.selection_metric,
+                "selection_score": current_score,
             }
             torch.save(
                 {
@@ -423,12 +465,32 @@ def main() -> None:
     if best_metrics is None:
         raise RuntimeError("Training finished without producing best metrics")
 
+    checkpoint = torch.load(output_dir / "best.pth", map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    test_metrics = evaluate_split(model, loaders.test, criterion, device, num_classes=loaders.num_classes)
+    best_metrics.update(
+        {
+            "test_loss": float(test_metrics["loss"]),
+            "test_oa": float(test_metrics["oa"]),
+            "test_aa": float(test_metrics["aa"]),
+            "test_kappa": float(test_metrics["kappa"]),
+        }
+    )
+    with (output_dir / "best_metrics.json").open("w", encoding="utf-8") as f:
+        json.dump(best_metrics, f, indent=2)
+
     logger.log(
         "Best | "
         f"epoch={best_metrics['epoch']} | "
-        f"oa={best_metrics['oa']:.4f} | "
-        f"aa={best_metrics['aa']:.4f} | "
-        f"kappa={best_metrics['kappa']:.4f}"
+        f"val_oa={best_metrics['val_oa']:.4f} | "
+        f"val_aa={best_metrics['val_aa']:.4f} | "
+        f"val_kappa={best_metrics['val_kappa']:.4f}"
+    )
+    logger.log(
+        "Test | "
+        f"test_oa={best_metrics['test_oa']:.4f} | "
+        f"test_aa={best_metrics['test_aa']:.4f} | "
+        f"test_kappa={best_metrics['test_kappa']:.4f}"
     )
 
 

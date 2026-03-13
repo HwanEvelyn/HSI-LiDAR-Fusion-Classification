@@ -55,6 +55,97 @@ def bulid_index(gt: np.ndarray, train_ratio: float, seed: int = 0) -> Tuple[List
     rng.shuffle(test_items)  # 打乱测试集索引顺序
     return train_items, test_items, num_classes
 
+
+def split_items_by_ratio(
+    items: List[IndexItem],
+    holdout_ratio: float,
+    seed: int = 0,
+) -> Tuple[List[IndexItem], List[IndexItem]]:
+    """
+    按类别分层切分样本列表，常用于 train/val 划分。
+    holdout_ratio 表示划到第二部分的比例。
+    """
+    if not 0.0 < holdout_ratio < 1.0:
+        raise ValueError("holdout_ratio 必须在 (0, 1) 区间内")
+
+    rng = np.random.default_rng(seed)
+    by_class: dict[int, List[IndexItem]] = {}
+    for item in items:
+        by_class.setdefault(item.y, []).append(item)
+
+    first_split: List[IndexItem] = []
+    second_split: List[IndexItem] = []
+
+    for cls, cls_items in by_class.items():
+        indices = np.arange(len(cls_items))
+        rng.shuffle(indices)
+        holdout_count = int(round(len(cls_items) * holdout_ratio))
+        if len(cls_items) > 1:
+            holdout_count = min(max(holdout_count, 1), len(cls_items) - 1)
+        selected = set(indices[:holdout_count].tolist())
+        for idx, item in enumerate(cls_items):
+            if idx in selected:
+                second_split.append(item)
+            else:
+                first_split.append(item)
+
+    rng.shuffle(first_split)
+    rng.shuffle(second_split)
+    return first_split, second_split
+
+
+def build_index_three_way(
+    gt: np.ndarray,
+    train_ratio: float,
+    val_ratio: float,
+    seed: int = 0,
+) -> Tuple[List[IndexItem], List[IndexItem], List[IndexItem], int]:
+    """
+    从整张 GT 中分层构建 train/val/test 三路样本。
+    train_ratio 和 val_ratio 都是相对总标注样本的比例。
+    """
+    if train_ratio <= 0 or val_ratio <= 0 or train_ratio + val_ratio >= 1.0:
+        raise ValueError("train_ratio 和 val_ratio 必须大于 0，且 train_ratio + val_ratio < 1")
+
+    rng = np.random.default_rng(seed)
+    labels = gt[gt > 0]
+    num_classes = int(labels.max())
+
+    train_items: List[IndexItem] = []
+    val_items: List[IndexItem] = []
+    test_items: List[IndexItem] = []
+
+    for cls in range(1, num_classes + 1):
+        coords = np.argwhere(gt == cls)
+        rng.shuffle(coords)
+        n_total = len(coords)
+        n_train = int(round(n_total * train_ratio))
+        n_val = int(round(n_total * val_ratio))
+
+        if n_total >= 3:
+            n_train = min(max(n_train, 1), n_total - 2)
+            n_val = min(max(n_val, 1), n_total - n_train - 1)
+        elif n_total == 2:
+            n_train, n_val = 1, 0
+        else:
+            n_train, n_val = 1, 0
+
+        train_coords = coords[:n_train]
+        val_coords = coords[n_train : n_train + n_val]
+        test_coords = coords[n_train + n_val :]
+
+        for r, c in train_coords:
+            train_items.append(IndexItem(int(r), int(c), cls - 1))
+        for r, c in val_coords:
+            val_items.append(IndexItem(int(r), int(c), cls - 1))
+        for r, c in test_coords:
+            test_items.append(IndexItem(int(r), int(c), cls - 1))
+
+    rng.shuffle(train_items)
+    rng.shuffle(val_items)
+    rng.shuffle(test_items)
+    return train_items, val_items, test_items, num_classes
+
 class HsiLidarPatchDataset(Dataset):
     """
     根据 IndexItem 提取 patch 数据
