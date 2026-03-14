@@ -1,4 +1,5 @@
 # HSI + LiDAR Fusion Classification
+
 ## 2026/3/5 进度日志
 - 完成数据 pipeline 的搭建:dataset/*、scripts/check_pipeline.py
 - pipe1.读取 data_hl.mat文件，提取HSI、LiDAR和GT数据
@@ -67,3 +68,76 @@
   2.val划分和train高度重叠导致分数虚高，修正
   3.训练结束时把最终测试集的混淆矩阵和每类精度落盘
   4.加一个汇总脚本，把各实验目录的 best_metrics.json 自动整理成 ablation markdown 表，scripts/summarize_ablation.py，直接从各实验目录生成 markdown 表
+## 2026/3/14进度日志
+- 导出论文素材：classification map、gate 统计、训练曲线、网络结构图草稿
+- 固定第 2 周主配置：`run_hct_bgc_v1_main`
+- 完成第 2 周主结果收口，整理 README、周报和第 3 周实验清单
+## 第 2 周稳定版本：HCT-BGC-v1
+
+当前推荐主实验配置命名为 `run_hct_bgc_v1_main`，对应命令：
+
+```bash
+python3 train.py \
+  --model hct_bgc \
+  --fusion-layers 1 \
+  --epochs 30 \
+  --batch-size 64 \
+  --num-workers 0 \
+  --output-dir results/run_hct_bgc_v1_main
+```
+
+### 模型结构
+
+- 双分支 CNN encoder：分别提取 HSI 与 LiDAR 的局部特征。
+- Tokenization：将 patch 特征图投影为 token 序列，并加入 `CLS token + learnable positional embedding`。
+- 模态内 Transformer Encoder：两路 token 各自建模长程依赖。
+- Bi-CTA Fusion Block：使用 `HSI cls -> LiDAR 全部 tokens`、`LiDAR cls -> HSI 全部 tokens` 的双向交互。
+- Gated Fuse：`g = sigmoid(Wg[h_cls; l_cls])`，`fused = g * h_cls + (1-g) * l_cls`。
+- MLP classifier：基于 `fused_token` 输出最终分类 logits。
+
+### 主实验超参数
+
+- `patch_size=11`
+- `pca_components=30`
+- `embed_dim=128`
+- `num_heads=4`
+- `num_layers=2`
+- `fusion_layers=1`
+- `dropout=0.1`
+- `optimizer=Adam`
+- `lr=1e-3`
+- `weight_decay=1e-4`
+- `batch_size=64`
+- `epochs=30`
+- `seed=42`
+
+### 数据划分与预处理
+
+- 数据集：Houston 2013 DFTC 官方数据。
+- 划分协议：`official train -> spatial train/val split + buffer`，官方 `test` 仅用于最终评估。
+- 验证集选择：按 `val_oa` 选择 best checkpoint，不再使用 test 指标选模型。
+- 预处理：`preprocess_scope=train`，仅使用训练子集统计量做 z-score 与 PCA 拟合，避免数据泄漏。
+- 默认空间隔离参数：`val_spatial_buffer = patch_size // 2 = 5`。
+
+### 当前最优结果
+
+当前主结果来自 `results/ablation_full/hct_bgc_v1/best_metrics.json`：
+
+- Best epoch: `13`
+- Val OA / AA / Kappa: `0.9170 / 0.9320 / 0.9093`
+- Test OA / AA / Kappa: `0.8596 / 0.8717 / 0.8480`
+
+### 当前消融结论
+
+- `HCT-BGC-v1` 优于 `Baseline-CNN`：
+  - Test OA: `0.8434 -> 0.8596`
+  - Test Kappa: `0.8303 -> 0.8480`
+- `fusion_layers=1` 最优，继续堆叠到 `2/3` 层会降低测试集表现。
+- `gate` 有效，关闭门控后测试集性能下降。
+- 当前这版 `contrastive alignment` 在验证集较强，但未提升测试集泛化，暂不作为主结果配置。
+
+### 已知问题
+
+- Apple Silicon 上 `Conv3d`、`MultiheadAttention`、`TransformerEncoder` 路径对 MPS 不稳定，脚本会自动回退到 CPU。
+- 当前 contrastive 分支仍需进一步调参和约束设计，暂不稳定。
+- 目前分类图和 gate 统计素材已能导出，但论文最终配色和排版仍需后期统一。
