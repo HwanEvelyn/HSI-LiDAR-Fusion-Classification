@@ -72,6 +72,7 @@
 - 导出论文素材：classification map、gate 统计、训练曲线、网络结构图草稿
 - 固定第 2 周主配置：`run_hct_bgc_v1_main`
 - 完成第 2 周主结果收口，整理 README、周报和第 3 周实验清单
+- 开启第三周任务：实验环境稳定化 + 多次运行脚本：跑出同一协议、同一 split、3 次重复运行下的 baseline 和 hct_bgc 的可比结果，在 results/repeats/
 ## 第 2 周稳定版本：HCT-BGC-v1
 
 当前推荐主实验配置命名为 `run_hct_bgc_v1_main`，对应命令：
