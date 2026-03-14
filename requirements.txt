@@ -12,3 +12,4 @@ scipy>=1.10
 matplotlib>=3.7
 scikit-image>=0.22
 tifffile>=2024.2
+PyYAML>=6.0

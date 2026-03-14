@@ -82,6 +82,7 @@ def collect_model_config(model: nn.Module, args: argparse.Namespace, hsi_channel
         "use_contrastive": args.use_contrastive,
         "contrastive_weight": args.contrastive_weight,
         "temperature": args.temperature,
+        "split_seed": args.split_seed,
         "val_ratio": args.val_ratio,
         "selection_metric": args.selection_metric,
         "preprocess_scope": args.preprocess_scope,
@@ -125,7 +126,7 @@ def build_dataloaders(
     train_ratio: float,
     batch_size: int,
     num_workers: int,
-    seed: int,
+    split_seed: int,
     split_mode: str,
     preprocess_scope: str,
     device: torch.device,
@@ -140,14 +141,14 @@ def build_dataloaders(
             official_train_items,
             holdout_ratio=val_ratio,
             buffer_radius=val_spatial_buffer,
-            seed=seed,
+            seed=split_seed,
         )
     else:
         train_items, val_items, test_items, num_classes = build_index_three_way(
             data.gt,
             train_ratio=train_ratio,
             val_ratio=val_ratio,
-            seed=seed,
+            seed=split_seed,
         )
 
     if len(train_items) == 0 or len(val_items) == 0 or len(test_items) == 0:
@@ -348,7 +349,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--output-dir", type=str, default="results/run_baseline")
+    parser.add_argument("--split-seed", type=int, default=42)
+    parser.add_argument("--output-dir", "--save-dir", dest="output_dir", type=str, default="results/run_baseline")
     parser.add_argument("--device", type=str, choices=["auto", "cuda", "mps", "cpu"], default="auto")
     return parser.parse_args()
 
@@ -438,7 +440,7 @@ def main() -> None:
         train_ratio=args.train_ratio,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        seed=args.seed,
+        split_seed=args.split_seed,
         split_mode=args.split_mode,
         preprocess_scope=args.preprocess_scope,
         device=device,
