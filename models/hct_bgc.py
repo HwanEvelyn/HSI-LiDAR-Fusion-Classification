@@ -124,11 +124,17 @@ class HCT_BGC(nn.Module):
 
         h_cls = h_tokens[:, 0]
         l_cls = l_tokens[:, 0]
-        fused_token = self.cls_fusion(h_cls, l_cls)
+        if self.fusion_mode == "gated":
+            gate = self.cls_fusion.compute_gate(h_cls, l_cls)
+            fused_token = gate * h_cls + (1.0 - gate) * l_cls
+        else:
+            gate = torch.full_like(h_cls, 0.5)
+            fused_token = self.cls_fusion(h_cls, l_cls)
         logits = self.classifier(fused_token)
         return {
             "logits": logits,   # 最终分类分数
             "h_cls": h_cls,     # hsi 的最终摘要特征
             "l_cls": l_cls,     # lidar。。
             "fused_token": fused_token,     # 融合后的联合表征
+            "gate": gate,       # 门控权重；平均融合时固定为 0.5
         }

@@ -102,10 +102,15 @@ class GatedCrossModalFusion(nn.Module):
         super().__init__()
         self.gate = nn.Linear(embed_dim * 2, embed_dim)
 
+    def compute_gate(self, cls_h: torch.Tensor, cls_l: torch.Tensor) -> torch.Tensor:
+        if cls_h.shape != cls_l.shape:
+            raise ValueError("GatedCrossModalFusion 期望 cls_h 和 cls_l 形状一致")
+        return torch.sigmoid(self.gate(torch.cat([cls_h, cls_l], dim=1)))
+
     def forward(self, cls_h: torch.Tensor, cls_l: torch.Tensor) -> torch.Tensor:
         if cls_h.shape != cls_l.shape:
             raise ValueError("GatedCrossModalFusion 期望 cls_h 和 cls_l 形状一致")
-        gate = torch.sigmoid(self.gate(torch.cat([cls_h, cls_l], dim=1)))
+        gate = self.compute_gate(cls_h, cls_l)
         return gate * cls_h + (1.0 - gate) * cls_l
 
 
