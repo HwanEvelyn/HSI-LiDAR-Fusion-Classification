@@ -142,3 +142,6 @@ python3 train.py \
 - Apple Silicon 上 `Conv3d`、`MultiheadAttention`、`TransformerEncoder` 路径对 MPS 不稳定，脚本会自动回退到 CPU。
 - 当前 contrastive 分支仍需进一步调参和约束设计，暂不稳定。
 - 目前分类图和 gate 统计素材已能导出，但论文最终配色和排版仍需后期统一。
+## 20263/16进度日志
+- 完成三组实验：patch size（9、11、13）；pca（20，30，40）；embed_dim（64、96、128）
+- 生成 mean+-std 图表，得到 patch size = 11、pca = 30、embed_dim = 128 的最优组合
