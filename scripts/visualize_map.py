@@ -29,6 +29,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=str, default="results/paper_figures/maps")
     parser.add_argument("--region", type=str, choices=["test", "labeled"], default="test")
     parser.add_argument("--device", type=str, choices=["auto", "cuda", "mps", "cpu"], default="auto")
+    parser.add_argument("--zoom-size", type=int, default=80, help="放大区域的边长")
+    parser.add_argument("--zoom-row", type=int, default=-1, help="放大区域左上角行坐标，<0 表示自动选择")
+    parser.add_argument("--zoom-col", type=int, default=-1, help="放大区域左上角列坐标，<0 表示自动选择")
     return parser.parse_args()
 
 
@@ -207,6 +210,103 @@ def save_panel_figure(output_path: Path, gt_map: np.ndarray, baseline_map: np.nd
     plt.close(fig)
 
 
+def build_zoom_triptych(gt_crop: np.ndarray, baseline_crop: np.ndarray, hct_crop: np.ndarray, num_classes: int) -> np.ndarray:
+    gap = 3
+    gt_rgb = colorize_map(gt_crop, num_classes)
+    baseline_rgb = colorize_map(baseline_crop, num_classes)
+    hct_rgb = colorize_map(hct_crop, num_classes)
+    height, width, _ = gt_rgb.shape
+    canvas = np.ones((height, width * 3 + gap * 2, 3), dtype=np.float32)
+    canvas[:, 0:width] = gt_rgb
+    canvas[:, width + gap : width * 2 + gap] = baseline_rgb
+    canvas[:, width * 2 + gap * 2 : width * 3 + gap * 2] = hct_rgb
+    return canvas
+
+
+def choose_zoom_region(
+    gt_map: np.ndarray,
+    baseline_map: np.ndarray,
+    hct_map: np.ndarray,
+    zoom_size: int,
+    manual_row: int,
+    manual_col: int,
+) -> tuple[int, int, int]:
+    height, width = gt_map.shape
+    zoom_size = min(zoom_size, height, width)
+    if manual_row >= 0 and manual_col >= 0:
+        row0 = min(max(manual_row, 0), max(height - zoom_size, 0))
+        col0 = min(max(manual_col, 0), max(width - zoom_size, 0))
+        return row0, col0, zoom_size
+
+    # 优先在更复杂、常见易混淆类别中找 baseline 与 HCT 差异大的区域。
+    focus_classes = {6, 7, 8, 9, 10, 11, 12}  # Residential, Commercial, Road, Highway, Railway, Parking1, Parking2 (1-based)
+    valid = gt_map > 0
+    focus_mask = np.isin(gt_map, list(focus_classes)) & valid
+    disagreement = ((baseline_map != gt_map) | (hct_map != gt_map) | (baseline_map != hct_map)) & valid
+    score_map = disagreement.astype(np.float32) + 0.5 * focus_mask.astype(np.float32)
+
+    stride = max(zoom_size // 4, 8)
+    best_score = -1.0
+    best_coord = (0, 0)
+    for row0 in range(0, max(height - zoom_size + 1, 1), stride):
+        for col0 in range(0, max(width - zoom_size + 1, 1), stride):
+            row1 = row0 + zoom_size
+            col1 = col0 + zoom_size
+            crop_score = float(score_map[row0:row1, col0:col1].sum())
+            if crop_score > best_score:
+                best_score = crop_score
+                best_coord = (row0, col0)
+
+    return best_coord[0], best_coord[1], zoom_size
+
+
+def save_comparison_figure(
+    output_path: Path,
+    gt_map: np.ndarray,
+    baseline_map: np.ndarray,
+    hct_map: np.ndarray,
+    num_classes: int,
+    zoom_row: int,
+    zoom_col: int,
+    zoom_size: int,
+) -> None:
+    row0, col0, zoom_size = choose_zoom_region(
+        gt_map=gt_map,
+        baseline_map=baseline_map,
+        hct_map=hct_map,
+        zoom_size=zoom_size,
+        manual_row=zoom_row,
+        manual_col=zoom_col,
+    )
+    row1 = row0 + zoom_size
+    col1 = col0 + zoom_size
+
+    gt_crop = gt_map[row0:row1, col0:col1]
+    baseline_crop = baseline_map[row0:row1, col0:col1]
+    hct_crop = hct_map[row0:row1, col0:col1]
+    zoom_canvas = build_zoom_triptych(gt_crop, baseline_crop, hct_crop, num_classes)
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    panels = [
+        ("GT", gt_map),
+        ("Baseline", baseline_map),
+        ("HCT-BGC", hct_map),
+    ]
+    for ax, (title, panel_map) in zip(axes.flat[:3], panels):
+        ax.imshow(colorize_map(panel_map, num_classes))
+        rect = plt.Rectangle((col0, row0), zoom_size, zoom_size, fill=False, edgecolor="red", linewidth=2)
+        ax.add_patch(rect)
+        ax.set_title(title)
+        ax.axis("off")
+
+    axes[1, 1].imshow(zoom_canvas)
+    axes[1, 1].set_title("Zoom Region: GT | Baseline | HCT-BGC")
+    axes[1, 1].axis("off")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
+
+
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir)
@@ -229,6 +329,16 @@ def main() -> None:
     hct_pred_map, gate_mean_map, gate_class_pref = predict_map(hct_ckpt, target_map, hsi, lidar, device, logger)
 
     save_panel_figure(output_dir / "classification_map_panel.png", target_map, baseline_pred_map, hct_pred_map, int(hct_ckpt["num_classes"]))
+    save_comparison_figure(
+        output_path=output_dir / "classification_comparison.png",
+        gt_map=target_map,
+        baseline_map=baseline_pred_map,
+        hct_map=hct_pred_map,
+        num_classes=int(hct_ckpt["num_classes"]),
+        zoom_row=args.zoom_row,
+        zoom_col=args.zoom_col,
+        zoom_size=args.zoom_size,
+    )
     plt.imsave(output_dir / "classification_map_gt.png", colorize_map(target_map, int(hct_ckpt["num_classes"])))
     plt.imsave(output_dir / "classification_map_baseline.png", colorize_map(baseline_pred_map, int(hct_ckpt["num_classes"])))
     plt.imsave(output_dir / "classification_map_hct_bgc_v1.png", colorize_map(hct_pred_map, int(hct_ckpt["num_classes"])))
