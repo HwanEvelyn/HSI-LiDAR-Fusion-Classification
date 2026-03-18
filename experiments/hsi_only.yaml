@@ -1,0 +1,19 @@
+name: hsi_only
+output_root: results/compare_methods
+train_args:
+  model: hsi_only
+  epochs: 30
+  batch_size: 64
+  num_workers: 0
+  split_mode: official
+  preprocess_scope: train
+  split_seed: 42
+  seed: 42
+  val_ratio: 0.2
+  selection_metric: val_oa
+  patch_size: 11
+  pca_components: 30
+  embed_dim: 128
+  num_heads: 4
+  num_layers: 2
+  dropout: 0.1

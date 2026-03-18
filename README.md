@@ -139,7 +139,7 @@ python3 train.py \
 
 ### 已知问题
 
-- Apple Silicon 上 `Conv3d`、`MultiheadAttention`、`TransformerEncoder` 路径对 MPS 不稳定，脚本会自动回退到 CPU。
+- Apple Silicon 上本项目模型在 MPS 下存在原生崩溃风险；训练、评估和可视化脚本会自动回退到 CPU，避免 `malloc` / `abort` 类错误。
 - 当前 contrastive 分支仍需进一步调参和约束设计，暂不稳定。
 - 目前分类图和 gate 统计素材已能导出，但论文最终配色和排版仍需后期统一。
 ## 2026/3/16进度日志

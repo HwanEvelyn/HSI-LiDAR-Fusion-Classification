@@ -17,6 +17,7 @@ from dataset.mat_loader import build_official_houston_split, load_houston_hl
 from dataset.patch_dataset import HsiLidarPatchDataset, build_index_three_way, split_items_spatial_holdout
 from dataset.preprocessing import pca_reduce, pca_reduce_with_mask, zscore_norm, zscore_norm_with_mask
 from models.baseline_cnn import BaselineFusionNet
+from models.comparison_models import CnnTransformerNoFusion, HsiOnlyNet, LidarOnlyNet
 from models.hct_bgc import HCT_BGC
 from utils.logger import SimpleLogger
 from utils.metrics import confusion_matrix, oa_aa_kappa, per_class_accuracy
@@ -49,6 +50,25 @@ def create_model(args: argparse.Namespace | dict, hsi_channels: int, num_classes
         return BaselineFusionNet(
             hsi_in_channels=hsi_channels,
             num_classes=num_classes,
+        )
+    if model_name == "hsi_only":
+        return HsiOnlyNet(
+            hsi_in_channels=hsi_channels,
+            num_classes=num_classes,
+        )
+    if model_name == "lidar_only":
+        return LidarOnlyNet(
+            num_classes=num_classes,
+        )
+    if model_name == "cnn_transformer":
+        return CnnTransformerNoFusion(
+            hsi_in_channels=hsi_channels,
+            num_classes=num_classes,
+            embed_dim=args.get("embed_dim", 128) if isinstance(args, dict) else args.embed_dim,
+            num_heads=args.get("num_heads", 4) if isinstance(args, dict) else args.num_heads,
+            num_layers=args.get("num_layers", 2) if isinstance(args, dict) else args.num_layers,
+            dropout=args.get("dropout", 0.1) if isinstance(args, dict) else args.dropout,
+            patch_size=args.get("patch_size", 11) if isinstance(args, dict) else args.patch_size,
         )
     if model_name == "hct_bgc":
         return HCT_BGC(
@@ -325,7 +345,12 @@ def save_final_eval_artifacts(output_dir: Path, metrics: Dict[str, float]) -> No
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Minimal HSI-LiDAR baseline training")
     parser.add_argument("--data-root", type=str, default="data/raw/Houston 2013/2013_DFTC")
-    parser.add_argument("--model", type=str, choices=["baseline", "hct_bgc"], default="baseline")
+    parser.add_argument(
+        "--model",
+        type=str,
+        choices=["baseline", "hsi_only", "lidar_only", "cnn_transformer", "hct_bgc"],
+        default="baseline",
+    )
     parser.add_argument("--patch-size", type=int, default=11)
     parser.add_argument("--pca-components", type=int, default=30)
     parser.add_argument("--embed-dim", type=int, default=128)
@@ -392,24 +417,13 @@ def log_device_info(logger: SimpleLogger, device: torch.device) -> None:
 def maybe_fallback_from_mps(model: nn.Module, device: torch.device, logger: SimpleLogger) -> torch.device:
     if device.type != "mps":
         return device
-    unsupported_mps_modules = (
-        nn.Conv3d,
-        nn.MultiheadAttention,
-        nn.TransformerEncoder,
-        nn.TransformerEncoderLayer,
+    module_types = sorted({type(module).__name__ for module in model.modules()})
+    logger.log(
+        "Warning: MPS is available, but this project's models are not stable on the current "
+        "PyTorch + Apple Silicon runtime and may abort at the native runtime level. "
+        f"Detected model modules: {', '.join(module_types)}. Falling back to CPU."
     )
-    hit_types = sorted(
-        {type(module).__name__ for module in model.modules() if isinstance(module, unsupported_mps_modules)}
-    )
-    if hit_types:
-        logger.log(
-            "Warning: detected MPS-unstable modules in the selected model: "
-            f"{', '.join(hit_types)}. "
-            "PyTorch MPS on Apple Silicon is unstable for this path and may abort at the native runtime level. "
-            "Falling back to CPU."
-        )
-        return torch.device("cpu")
-    return device
+    return torch.device("cpu")
 
 
 def main() -> None:
