@@ -18,6 +18,7 @@ class HCT_BGC(nn.Module):
     def __init__(
         self,
         hsi_in_channels: int,
+        lidar_in_channels: int,
         num_classes: int,
         embed_dim: int = 128,
         num_heads: int = 4,
@@ -45,7 +46,7 @@ class HCT_BGC(nn.Module):
             "fusion_mode": "average" if disable_gate else "gated",
         }
         self.hsi_encoder = HsiCnnEncoder(hsi_in_channels, embed_dim=embed_dim)
-        self.lidar_encoder = LidarCnnEncoder(embed_dim=embed_dim)
+        self.lidar_encoder = LidarCnnEncoder(in_channels=lidar_in_channels, embed_dim=embed_dim)
 
         self.hsi_tokenizer = Tokenizer(
             self.hsi_encoder.out_channels,

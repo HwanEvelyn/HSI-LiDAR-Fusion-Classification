@@ -103,7 +103,8 @@ def evaluate_checkpoint(
     set_seed(int(get_train_arg(train_args, "seed", 42)))
 
     loaders = build_loaders_from_checkpoint(train_args, device)
-    model = create_model(train_args, int(checkpoint["hsi_channels"]), int(checkpoint["num_classes"]))
+    lidar_channels = int(checkpoint.get("lidar_channels", checkpoint.get("model_config", {}).get("lidar_in_channels", 1)))
+    model = create_model(train_args, int(checkpoint["hsi_channels"]), lidar_channels, int(checkpoint["num_classes"]))
     device = maybe_fallback_from_mps(model, device, logger)
     if device.type == "cpu":
         logger.log("Using device: cpu")

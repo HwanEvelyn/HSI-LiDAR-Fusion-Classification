@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from scipy.io import loadmat
 import tifffile
 from matplotlib.path import Path as MplPath
 from skimage.draw import polygon as draw_polygon
@@ -39,6 +40,7 @@ class MatData:
     gt: np.ndarray
     train_gt: np.ndarray
     test_gt: np.ndarray
+    dataset_name: str = "houston"
 
 
 def _parse_roi_txt(txt_path: Path, shape: tuple[int, int]) -> np.ndarray:
@@ -267,6 +269,48 @@ def load_houston_hl(data_root: str | Path) -> MatData:
         gt=gt,
         train_gt=train_gt,
         test_gt=test_gt,
+        dataset_name="houston",
+    )
+
+
+def load_trento_hl(data_root: str | Path) -> MatData:
+    root = Path(data_root)
+    hsi_path = root / "Italy_hsi.mat"
+    lidar_path = root / "Italy_lidar.mat"
+    gt_path = root / "allgrd.mat"
+
+    for path in [hsi_path, lidar_path, gt_path]:
+        if not path.exists():
+            raise FileNotFoundError(f"Required Trento file not found: {path}")
+
+    hsi_mat = loadmat(hsi_path)
+    lidar_mat = loadmat(lidar_path)
+    gt_mat = loadmat(gt_path)
+
+    if "data" not in hsi_mat or "data" not in lidar_mat or "mask_test" not in gt_mat:
+        raise KeyError("Trento .mat 文件缺少预期字段：HSI/LiDAR 需要 `data`，标签需要 `mask_test`")
+
+    hsi = np.asarray(hsi_mat["data"], dtype=np.float32)
+    lidar = np.asarray(lidar_mat["data"], dtype=np.float32)
+    gt = np.asarray(gt_mat["mask_test"], dtype=np.int64)
+
+    if hsi.ndim != 3:
+        raise ValueError(f"Expected Trento HSI cube with shape (H, W, C), got {hsi.shape}")
+    if lidar.ndim not in {2, 3}:
+        raise ValueError(f"Expected Trento LiDAR with shape (H, W) or (H, W, C), got {lidar.shape}")
+    if hsi.shape[:2] != lidar.shape[:2]:
+        raise ValueError(f"HSI and LiDAR spatial shapes do not match: {hsi.shape[:2]} vs {lidar.shape[:2]}")
+    if gt.shape != hsi.shape[:2]:
+        raise ValueError(f"GT and HSI spatial shapes do not match: {gt.shape} vs {hsi.shape[:2]}")
+
+    # 目前数据目录里仅提供全标注图，训练时使用 random split / spatial holdout 协议。
+    return MatData(
+        hsi=hsi,
+        lidar=lidar,
+        gt=gt,
+        train_gt=gt.copy(),
+        test_gt=gt.copy(),
+        dataset_name="trento",
     )
 
 
@@ -285,3 +329,12 @@ def build_official_houston_split(mat_data: MatData) -> tuple[list[IndexItem], li
 
     num_classes = int(max(mat_data.train_gt.max(), mat_data.test_gt.max()))
     return train_items, test_items, num_classes
+
+
+def load_dataset(data_root: str | Path) -> MatData:
+    root = Path(data_root)
+    if (root / "2013_IEEE_GRSS_DF_Contest_CASI.tif").exists():
+        return load_houston_hl(root)
+    if (root / "Italy_hsi.mat").exists():
+        return load_trento_hl(root)
+    raise FileNotFoundError(f"Unsupported dataset directory: {root}")

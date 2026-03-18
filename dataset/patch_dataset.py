@@ -265,10 +265,13 @@ class HsiLidarPatchDataset(Dataset):
         rp, cp = r + self.pad, c + self.pad  # 加上pad偏移
 
         hsi_patch = self.hsi_pad[rp - self.pad:rp + self.pad + 1, cp - self.pad:cp + self.pad + 1, :]  # (patch_size, patch_size, C)
-        lidar_patch = self.lidar_pad[rp - self.pad:rp + self.pad + 1, cp - self.pad:cp + self.pad + 1]  # (patch_size, patch_size)
+        lidar_patch = self.lidar_pad[rp - self.pad:rp + self.pad + 1, cp - self.pad:cp + self.pad + 1]
 
-        # 转换成torch.Tensor，hsi_patch (C, patch_size, patch_size)，lidar_patch (1, patch_size, patch_size)，y (scalar)
+        # 转换成torch.Tensor，HSI 为 (C, P, P)；LiDAR 支持单通道或多通道。
         hsi_t = torch.from_numpy(hsi_patch).permute(2, 0, 1).contiguous()  # (C, patch_size, patch_size)
-        lidar_t = torch.from_numpy(lidar_patch).unsqueeze(0).contiguous()  # (1, patch_size, patch_size)
+        if lidar_patch.ndim == 2:
+            lidar_t = torch.from_numpy(lidar_patch).unsqueeze(0).contiguous()
+        else:
+            lidar_t = torch.from_numpy(lidar_patch).permute(2, 0, 1).contiguous()
         y_t = torch.tensor(y, dtype=torch.long)  # (scalar)
         return hsi_t, lidar_t, y_t

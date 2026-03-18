@@ -14,8 +14,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from dataset.mat_loader import build_official_houston_split, load_houston_hl
-from dataset.patch_dataset import HsiLidarPatchDataset, IndexItem
+from dataset.mat_loader import build_official_houston_split, load_dataset
+from dataset.patch_dataset import HsiLidarPatchDataset, IndexItem, build_index_three_way, split_items_spatial_holdout
 from dataset.preprocessing import pca_reduce, pca_reduce_with_mask, zscore_norm, zscore_norm_with_mask
 from train import create_model, log_device_info, maybe_fallback_from_mps, resolve_device, should_pin_memory, unpack_model_outputs
 from utils.logger import SimpleLogger
@@ -36,8 +36,41 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_preprocessed_data(train_args: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    data = load_houston_hl(train_args["data_root"])
-    train_items, _, _ = build_official_houston_split(data)
+    data = load_dataset(train_args["data_root"])
+    split_mode = train_args.get("split_mode", "official")
+    if split_mode == "official" and data.dataset_name == "houston":
+        train_items, test_items, _ = build_official_houston_split(data)
+        val_items = []
+    elif split_mode == "official":
+        coords = np.argwhere(data.gt > 0)
+        all_items = [IndexItem(int(r), int(c), int(data.gt[r, c]) - 1) for r, c in coords]
+        patch_size = int(train_args.get("patch_size", 11))
+        buffer_radius = int(train_args.get("val_spatial_buffer", patch_size // 2))
+        if buffer_radius < 0:
+            buffer_radius = patch_size // 2
+        train_ratio = float(train_args.get("train_ratio", 0.6))
+        val_ratio = float(train_args.get("val_ratio", 0.2))
+        split_seed = int(train_args.get("split_seed", train_args.get("seed", 42)))
+        train_val_items, test_items = split_items_spatial_holdout(
+            all_items,
+            holdout_ratio=1.0 - train_ratio - val_ratio,
+            buffer_radius=buffer_radius,
+            seed=split_seed,
+        )
+        inner_val_ratio = val_ratio / max(train_ratio + val_ratio, 1e-8)
+        train_items, val_items = split_items_spatial_holdout(
+            train_val_items,
+            holdout_ratio=inner_val_ratio,
+            buffer_radius=buffer_radius,
+            seed=split_seed + 1,
+        )
+    else:
+        train_items, val_items, test_items, _ = build_index_three_way(
+            data.gt,
+            train_ratio=float(train_args.get("train_ratio", 0.6)),
+            val_ratio=float(train_args.get("val_ratio", 0.2)),
+            seed=int(train_args.get("split_seed", train_args.get("seed", 42))),
+        )
 
     train_mask = np.zeros_like(data.gt, dtype=bool)
     for item in train_items:
@@ -54,7 +87,14 @@ def build_preprocessed_data(train_args: dict) -> tuple[np.ndarray, np.ndarray, n
         if 0 < int(train_args["pca_components"]) < hsi.shape[-1]:
             hsi = pca_reduce(hsi, n_components=int(train_args["pca_components"])).x_pca
 
-    return hsi, lidar, data.train_gt, data.test_gt
+    train_gt = np.zeros_like(data.gt, dtype=np.int64)
+    test_gt = np.zeros_like(data.gt, dtype=np.int64)
+    for item in train_items + val_items:
+        train_gt[item.r, item.c] = item.y + 1
+    for item in test_items:
+        test_gt[item.r, item.c] = item.y + 1
+
+    return hsi, lidar, train_gt, test_gt
 
 
 def build_items(label_map: np.ndarray) -> list[IndexItem]:
@@ -94,7 +134,8 @@ def predict_map(
         items=items,
         patch_size=int(train_args["patch_size"]),
     )
-    model = create_model(train_args, int(checkpoint["hsi_channels"]), int(checkpoint["num_classes"]))
+    lidar_channels = int(checkpoint.get("lidar_channels", checkpoint.get("model_config", {}).get("lidar_in_channels", 1)))
+    model = create_model(train_args, int(checkpoint["hsi_channels"]), lidar_channels, int(checkpoint["num_classes"]))
     device = maybe_fallback_from_mps(model, device, logger)
     loader = DataLoader(
         dataset,

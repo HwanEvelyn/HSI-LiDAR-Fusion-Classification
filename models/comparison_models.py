@@ -35,12 +35,13 @@ class HsiOnlyNet(nn.Module):
 class LidarOnlyNet(nn.Module):
     def __init__(
         self,
+        lidar_in_channels: int,
         num_classes: int,
         lidar_feature_dim: int = 32,
         hidden_dim: int = 128,
     ) -> None:
         super().__init__()
-        self.lidar_branch = LidarBranch(out_channels=lidar_feature_dim)
+        self.lidar_branch = LidarBranch(in_channels=lidar_in_channels, out_channels=lidar_feature_dim)
         self.classifier = nn.Sequential(
             nn.Linear(self.lidar_branch.out_channels, hidden_dim),
             nn.ReLU(inplace=True),
@@ -63,6 +64,7 @@ class CnnTransformerNoFusion(nn.Module):
     def __init__(
         self,
         hsi_in_channels: int,
+        lidar_in_channels: int,
         num_classes: int,
         embed_dim: int = 128,
         num_heads: int = 4,
@@ -84,7 +86,7 @@ class CnnTransformerNoFusion(nn.Module):
             "fusion_mode": "concat_cls",
         }
         self.hsi_encoder = HsiCnnEncoder(hsi_in_channels, embed_dim=embed_dim)
-        self.lidar_encoder = LidarCnnEncoder(embed_dim=embed_dim)
+        self.lidar_encoder = LidarCnnEncoder(in_channels=lidar_in_channels, embed_dim=embed_dim)
         self.hsi_tokenizer = Tokenizer(
             self.hsi_encoder.out_channels,
             embed_dim=embed_dim,

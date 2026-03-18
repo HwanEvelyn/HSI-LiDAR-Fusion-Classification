@@ -13,8 +13,8 @@ from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader
 
-from dataset.mat_loader import build_official_houston_split, load_houston_hl
-from dataset.patch_dataset import HsiLidarPatchDataset, build_index_three_way, split_items_spatial_holdout
+from dataset.mat_loader import build_official_houston_split, load_dataset
+from dataset.patch_dataset import HsiLidarPatchDataset, IndexItem, build_index_three_way, split_items_spatial_holdout
 from dataset.preprocessing import pca_reduce, pca_reduce_with_mask, zscore_norm, zscore_norm_with_mask
 from models.baseline_cnn import BaselineFusionNet
 from models.comparison_models import CnnTransformerNoFusion, HsiOnlyNet, LidarOnlyNet
@@ -30,6 +30,7 @@ class SplitLoaders:
     val: DataLoader
     test: DataLoader
     hsi_channels: int
+    lidar_channels: int
     num_classes: int
     split_sizes: Dict[str, int]
 
@@ -43,12 +44,13 @@ class EpochStats:
     y_pred: np.ndarray
 
 
-def create_model(args: argparse.Namespace | dict, hsi_channels: int, num_classes: int) -> nn.Module:
+def create_model(args: argparse.Namespace | dict, hsi_channels: int, lidar_channels: int, num_classes: int) -> nn.Module:
     model_name = args["model"] if isinstance(args, dict) else args.model
     fusion_layers = args.get("fusion_layers", 1) if isinstance(args, dict) else args.fusion_layers
     if model_name == "baseline":
         return BaselineFusionNet(
             hsi_in_channels=hsi_channels,
+            lidar_in_channels=lidar_channels,
             num_classes=num_classes,
         )
     if model_name == "hsi_only":
@@ -58,11 +60,13 @@ def create_model(args: argparse.Namespace | dict, hsi_channels: int, num_classes
         )
     if model_name == "lidar_only":
         return LidarOnlyNet(
+            lidar_in_channels=lidar_channels,
             num_classes=num_classes,
         )
     if model_name == "cnn_transformer":
         return CnnTransformerNoFusion(
             hsi_in_channels=hsi_channels,
+            lidar_in_channels=lidar_channels,
             num_classes=num_classes,
             embed_dim=args.get("embed_dim", 128) if isinstance(args, dict) else args.embed_dim,
             num_heads=args.get("num_heads", 4) if isinstance(args, dict) else args.num_heads,
@@ -73,6 +77,7 @@ def create_model(args: argparse.Namespace | dict, hsi_channels: int, num_classes
     if model_name == "hct_bgc":
         return HCT_BGC(
             hsi_in_channels=hsi_channels,
+            lidar_in_channels=lidar_channels,
             num_classes=num_classes,
             embed_dim=args.get("embed_dim", 128) if isinstance(args, dict) else args.embed_dim,
             num_heads=args.get("num_heads", 4) if isinstance(args, dict) else args.num_heads,
@@ -93,11 +98,18 @@ def unpack_model_outputs(outputs: torch.Tensor | Dict[str, torch.Tensor]) -> Dic
     return {"logits": outputs}
 
 
-def collect_model_config(model: nn.Module, args: argparse.Namespace, hsi_channels: int, num_classes: int) -> Dict[str, object]:
+def collect_model_config(
+    model: nn.Module,
+    args: argparse.Namespace,
+    hsi_channels: int,
+    lidar_channels: int,
+    num_classes: int,
+) -> Dict[str, object]:
     effective_val_spatial_buffer = args.val_spatial_buffer if args.val_spatial_buffer >= 0 else args.patch_size // 2
     config: Dict[str, object] = {
         "model": args.model,
         "hsi_in_channels": hsi_channels,
+        "lidar_in_channels": lidar_channels,
         "num_classes": num_classes,
         "use_contrastive": args.use_contrastive,
         "contrastive_weight": args.contrastive_weight,
@@ -153,9 +165,9 @@ def build_dataloaders(
     val_ratio: float,
     val_spatial_buffer: int,
 ) -> SplitLoaders:
-    data = load_houston_hl(data_root)
+    data = load_dataset(data_root)
 
-    if split_mode == "official":
+    if split_mode == "official" and data.dataset_name == "houston":
         official_train_items, test_items, num_classes = build_official_houston_split(data)
         train_items, val_items = split_items_spatial_holdout(
             official_train_items,
@@ -163,6 +175,23 @@ def build_dataloaders(
             buffer_radius=val_spatial_buffer,
             seed=split_seed,
         )
+    elif split_mode == "official":
+        coords = np.argwhere(data.gt > 0)
+        all_items = [IndexItem(int(r), int(c), int(data.gt[r, c]) - 1) for r, c in coords]
+        train_val_items, test_items = split_items_spatial_holdout(
+            all_items,
+            holdout_ratio=1.0 - train_ratio - val_ratio,
+            buffer_radius=val_spatial_buffer,
+            seed=split_seed,
+        )
+        inner_val_ratio = val_ratio / max(train_ratio + val_ratio, 1e-8)
+        train_items, val_items = split_items_spatial_holdout(
+            train_val_items,
+            holdout_ratio=inner_val_ratio,
+            buffer_radius=val_spatial_buffer,
+            seed=split_seed + 1,
+        )
+        num_classes = int(data.gt.max())
     else:
         train_items, val_items, test_items, num_classes = build_index_three_way(
             data.gt,
@@ -209,6 +238,7 @@ def build_dataloaders(
         val=val_loader,
         test=test_loader,
         hsi_channels=hsi.shape[-1],
+        lidar_channels=1 if lidar.ndim == 2 else lidar.shape[-1],
         num_classes=num_classes,
         split_sizes={
             "train": len(train_items),
@@ -462,12 +492,12 @@ def main() -> None:
         val_spatial_buffer=args.val_spatial_buffer if args.val_spatial_buffer >= 0 else args.patch_size // 2,
     )
 
-    model = create_model(args, loaders.hsi_channels, loaders.num_classes)
+    model = create_model(args, loaders.hsi_channels, loaders.lidar_channels, loaders.num_classes)
     device = maybe_fallback_from_mps(model, device, logger)
     if device.type == "cpu":
         logger.log("Using device: cpu")
     model = model.to(device)
-    model_config = collect_model_config(model, args, loaders.hsi_channels, loaders.num_classes)
+    model_config = collect_model_config(model, args, loaders.hsi_channels, loaders.lidar_channels, loaders.num_classes)
     criterion = nn.CrossEntropyLoss()
     optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
@@ -529,6 +559,7 @@ def main() -> None:
                     "args": vars(args),
                     "model_config": model_config,
                     "hsi_channels": loaders.hsi_channels,
+                    "lidar_channels": loaders.lidar_channels,
                     "num_classes": loaders.num_classes,
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),

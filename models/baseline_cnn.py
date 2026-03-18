@@ -59,7 +59,7 @@ class HsiBranch(nn.Module):
 class LidarBranch(nn.Module):
     """
     LiDAR分支
-    输入： (B, 1, H, W) B = batch size, 1 = LiDAR通道数, H/W = patch大小(如11 * 11)
+    输入： (B, C_l, H, W) B = batch size, C_l = LiDAR通道数
     """
     def __init__(self, in_channels: int = 1, out_channels: int = 32) -> None:
         super().__init__()
@@ -80,7 +80,7 @@ class LidarBranch(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() != 4:
-            raise ValueError(f"Expected LiDAR input with shape (B, 1, H, W), got {tuple(x.shape)}")
+            raise ValueError(f"Expected LiDAR input with shape (B, C_l, H, W), got {tuple(x.shape)}")
         x = self.encoder(x)
         return torch.flatten(x, 1)
 
@@ -93,6 +93,7 @@ class BaselineFusionNet(nn.Module):
     def __init__(
         self,
         hsi_in_channels: int,
+        lidar_in_channels: int,
         num_classes: int,
         hsi_feature_dim: int = 64,
         lidar_feature_dim: int = 32,
@@ -103,7 +104,7 @@ class BaselineFusionNet(nn.Module):
             in_channels=hsi_in_channels,
             out_channels=hsi_feature_dim,
         )
-        self.lidar_branch = LidarBranch(out_channels=lidar_feature_dim)
+        self.lidar_branch = LidarBranch(in_channels=lidar_in_channels, out_channels=lidar_feature_dim)
         fusion_dim = self.hsi_branch.out_channels + self.lidar_branch.out_channels
         self.classifier = nn.Sequential(
             nn.Linear(fusion_dim, hidden_dim),
