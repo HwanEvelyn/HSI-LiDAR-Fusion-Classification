@@ -149,3 +149,16 @@ python3 train.py \
 - 修改 evaluate.py ，输出每一类的评估的准确性对比（Per-Class Accuracy + Confusion Matrix）
 - 修改 visualize_map.py，生成升级版分类图
 - 整理实验表 + 写week 3实验小节：本周实验结果总结在 week3_summary.md 中
+## 2026/3/18进度日志
+1. 增加同类对比method实验
+  - HSI-only：只用 HSI 分支做分类
+  - LiDAR-only：只用 LiDAR 分支做分类
+  - CNN baseline：现有双分支 CNN 融合基线
+  - CNN+Transformer：双分支 CNN + 各自 Transformer 编码，；但不做 Bi-CTA 和 gate
+  - Your model：完整 HCT-BGC-v1
+2. 在 Trento 数据集上测试
+  | Model | Best Epoch | Val OA | Val AA | Val Kappa | Test OA | Test AA | Test Kappa |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+  | Baseline-CNN | 10 | 0.9954 | 0.9771 | 0.9941 | 0.9937 | 0.9866 | 0.9912 |
+  | HCT-BGC-v1 | 6 | 0.9980 | 0.9497 | 0.9974 | 0.9922 | 0.9635 | 0.9891 |
+  

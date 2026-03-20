@@ -136,3 +136,37 @@ python3 train.py \
   --split-seed 42 \
   --output-dir results/run_hct_bgc_v1_main
 ```
+
+## Trento 补充实验
+
+在 Trento 数据集上，当前使用的是基于整张标注图的空间隔离 `train / val / test` 划分，而不是文献中常见的固定 train/test mask。对应单次实验结果如下：
+
+| Model | Best Epoch | Val OA | Val AA | Val Kappa | Test OA | Test AA | Test Kappa |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline-CNN | 10 | 0.9954 | 0.9771 | 0.9941 | 0.9937 | 0.9866 | 0.9912 |
+| HCT-BGC-v1 | 6 | 0.9980 | 0.9497 | 0.9974 | 0.9922 | 0.9635 | 0.9891 |
+
+结论：
+
+- 在当前 Trento 划分下，HCT-BGC-v1 没有超过 Baseline-CNN。
+- 虽然 HCT-BGC-v1 的验证集 OA 更高，但测试集 OA、AA 和 Kappa 都略低于 baseline。
+- 其中 AA 下降更明显，说明更可能是少数类别被拉低，而不是整体分类性能普遍下降。
+
+当前分析：
+
+- 这不是 Houston 中出现过的 patch overlap 泄漏问题。当前 Trento 的 `train / val / test` 之间最小 Chebyshev 距离为 `6`，而 `patch_size=11` 对应的 buffer 半径为 `5`，因此不存在 patch 重叠。
+- Trento 只有 6 类，场景结构相对规整，本身就是一个比 Houston 更容易的场景；在这种数据上，强 CNN baseline 往往已经足够有效。
+- 当前这份 Trento 数据的 LiDAR 为 2 通道，而不是某些论文里常见的单通道版本，因此与文献里的公开结果不完全可直接对齐。
+- HCT-BGC-v1 的 Transformer 与跨模态交互模块在 Houston 这类复杂场景中有优势，但在 Trento 这种类别较少、空间分布较规律的场景中，可能没有带来额外收益，反而会引入一定的过拟合或类别扰动。
+
+下一步最值得尝试的补救方向：
+
+1. 先看 Trento 的 per-class accuracy，定位是不是个别类别拖累了 AA。
+2. 优先尝试减小模型复杂度，而不是继续加模块：
+   - `embed_dim` 从 `128` 降到 `64` 或 `96`
+   - `num_layers` 从 `2` 降到 `1`
+   - `dropout` 从 `0.1` 提高到 `0.2`
+3. 如果目标是和文献结果更可比，可补一个 Trento 常见 protocol：
+   - 每类固定 `50` 个训练样本
+   - 其余作为测试样本
+4. 如果目标是保持协议严谨，则继续保留当前空间隔离划分，并将 Trento 作为“补充泛化实验”，而不是核心主结果。
