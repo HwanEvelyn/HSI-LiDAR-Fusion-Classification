@@ -40,6 +40,7 @@ class EpochStats:
     total_loss: float
     ce_loss: float
     contrastive_loss: float
+    aux_loss: float
     y_true: np.ndarray
     y_pred: np.ndarray
 
@@ -86,6 +87,9 @@ def create_model(args: argparse.Namespace | dict, hsi_channels: int, lidar_chann
             dropout=args.get("dropout", 0.1) if isinstance(args, dict) else args.dropout,
             patch_size=args.get("patch_size", 11) if isinstance(args, dict) else args.patch_size,
             disable_gate=args.get("disable_gate", False) if isinstance(args, dict) else args.disable_gate,
+            encoder_variant=args.get("encoder_variant", "hetero") if isinstance(args, dict) else args.encoder_variant,
+            use_conservative_fusion=args.get("use_conservative_fusion", False) if isinstance(args, dict) else args.use_conservative_fusion,
+            use_aux_heads=args.get("use_aux_heads", False) if isinstance(args, dict) else args.use_aux_heads,
         )
     raise ValueError(f"Unsupported model: {model_name}")
 
@@ -123,6 +127,10 @@ def collect_model_config(
         "train_augment": args.train_augment,
         "label_smoothing": args.label_smoothing,
         "early_stopping_patience": args.early_stopping_patience,
+        "encoder_variant": args.encoder_variant,
+        "use_conservative_fusion": args.use_conservative_fusion,
+        "use_aux_heads": args.use_aux_heads,
+        "aux_weight": args.aux_weight,
     }
     if hasattr(model, "get_config"):
         config.update(model.get_config())
@@ -260,6 +268,8 @@ def run_epoch(
     use_contrastive: bool,
     contrastive_weight: float,
     temperature: float,
+    use_aux_heads: bool,
+    aux_weight: float,
     optimizer: Adam | None = None,
 ) -> EpochStats:
     is_train = optimizer is not None
@@ -268,6 +278,7 @@ def run_epoch(
     total_loss_sum = 0.0
     ce_loss_sum = 0.0
     contrastive_loss_sum = 0.0
+    aux_loss_sum = 0.0
     total_samples = 0
     all_targets = []
     all_preds = []
@@ -285,12 +296,16 @@ def run_epoch(
             logits = outputs["logits"]
             ce_loss = criterion(logits, target)
             contrastive_loss = torch.zeros((), device=device)
+            aux_loss = torch.zeros((), device=device)
             if use_contrastive:
                 if "h_cls" not in outputs or "l_cls" not in outputs:
                     raise KeyError("启用对比损失时，模型输出必须包含 'h_cls' 和 'l_cls'")
                 contrastive_loss = info_nce_loss(outputs["h_cls"], outputs["l_cls"], temperature=temperature)
-            # 总损失 = CE + weight * Contrative
-            loss = ce_loss + contrastive_weight * contrastive_loss
+            if use_aux_heads:
+                if "h_logits" not in outputs or "l_logits" not in outputs:
+                    raise KeyError("启用辅助头时，模型输出必须包含 'h_logits' 和 'l_logits'")
+                aux_loss = 0.5 * (criterion(outputs["h_logits"], target) + criterion(outputs["l_logits"], target))
+            loss = ce_loss + contrastive_weight * contrastive_loss + aux_weight * aux_loss
             if is_train:
                 loss.backward()
                 optimizer.step()
@@ -299,6 +314,7 @@ def run_epoch(
         total_loss_sum += float(loss.item()) * batch_size
         ce_loss_sum += float(ce_loss.item()) * batch_size
         contrastive_loss_sum += float(contrastive_loss.item()) * batch_size
+        aux_loss_sum += float(aux_loss.item()) * batch_size
         total_samples += batch_size
         all_targets.append(target.detach().cpu().numpy())
         all_preds.append(logits.argmax(dim=1).detach().cpu().numpy())
@@ -306,12 +322,14 @@ def run_epoch(
     avg_total = total_loss_sum / max(total_samples, 1)
     avg_ce = ce_loss_sum / max(total_samples, 1)
     avg_contrastive = contrastive_loss_sum / max(total_samples, 1)
+    avg_aux = aux_loss_sum / max(total_samples, 1)
     y_true = np.concatenate(all_targets) if all_targets else np.array([], dtype=np.int64)
     y_pred = np.concatenate(all_preds) if all_preds else np.array([], dtype=np.int64)
     return EpochStats(
         total_loss=avg_total,
         ce_loss=avg_ce,
         contrastive_loss=avg_contrastive,
+        aux_loss=avg_aux,
         y_true=y_true,
         y_pred=y_pred,
     )
@@ -332,6 +350,8 @@ def evaluate_split(
         use_contrastive=False,
         contrastive_weight=0.0,
         temperature=1.0,
+        use_aux_heads=False,
+        aux_weight=0.0,
         optimizer=None,
     )
     cm = confusion_matrix(epoch_stats.y_true, epoch_stats.y_pred, num_classes=num_classes)
@@ -391,8 +411,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-heads", type=int, default=4)
     parser.add_argument("--num-layers", type=int, default=2)
     parser.add_argument("--fusion-layers", type=int, choices=[1, 2, 3], default=1)
+    parser.add_argument("--encoder-variant", type=str, choices=["simple", "hetero", "light_hetero"], default="hetero")
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--disable-gate", action="store_true")
+    parser.add_argument("--use-conservative-fusion", action="store_true")
+    parser.add_argument("--use-aux-heads", action="store_true")
+    parser.add_argument("--aux-weight", type=float, default=0.2)
     parser.add_argument("--use-contrastive", action="store_true")
     parser.add_argument("--contrastive-weight", type=float, default=0.1)
     parser.add_argument("--temperature", type=float, default=0.1)
@@ -533,6 +557,8 @@ def main() -> None:
             use_contrastive=args.use_contrastive,
             contrastive_weight=args.contrastive_weight,
             temperature=args.temperature,
+            use_aux_heads=args.use_aux_heads,
+            aux_weight=args.aux_weight,
             optimizer=optimizer,
         )
         val_metrics = evaluate_split(model, loaders.val, criterion, device, num_classes=loaders.num_classes)
@@ -540,6 +566,7 @@ def main() -> None:
             f"Epoch {epoch:03d} | "
             f"train_ce={train_stats.ce_loss:.4f} | "
             f"train_contrastive={train_stats.contrastive_loss:.4f} | "
+            f"train_aux={train_stats.aux_loss:.4f} | "
             f"train_total={train_stats.total_loss:.4f} | "
             f"val_loss={val_metrics['loss']:.4f} | "
             f"val_oa={val_metrics['oa']:.4f} | "
@@ -555,6 +582,7 @@ def main() -> None:
                 "epoch": epoch,
                 "train_ce": float(train_stats.ce_loss),
                 "train_contrastive": float(train_stats.contrastive_loss),
+                "train_aux": float(train_stats.aux_loss),
                 "train_total": float(train_stats.total_loss),
                 "val_loss": float(val_metrics["loss"]),
                 "val_oa": float(val_metrics["oa"]),

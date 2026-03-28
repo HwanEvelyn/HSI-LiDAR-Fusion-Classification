@@ -39,34 +39,54 @@ class HsiCnnEncoder(nn.Module):
     2. 再用 3x3 卷积提取空间局部纹理
     3. 末端加入残差块稳定局部表征
     """
-    def __init__(self, in_channels: int, embed_dim: int = 128) -> None:
+    def __init__(self, in_channels: int, embed_dim: int = 128, variant: str = "hetero") -> None:
         super().__init__()
+        self.variant = variant
         hidden_dim = max(embed_dim // 2, 32)
         mid_dim = max(embed_dim // 4, 16)
-        self.spectral_mixer = nn.Sequential(
-            nn.Conv2d(in_channels, hidden_dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(hidden_dim),
-            nn.ReLU(inplace=True),
-        )
-        self.spatial_encoder = nn.Sequential(
-            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(hidden_dim, mid_dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(mid_dim),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(mid_dim, embed_dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(embed_dim),
-            nn.ReLU(inplace=True),
-            ResidualConvBlock(embed_dim),
-        )
+
+        if variant == "simple":
+            self.encoder = nn.Sequential(
+                nn.Conv2d(in_channels, hidden_dim, kernel_size=3, padding=1),
+                nn.BatchNorm2d(hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(hidden_dim, embed_dim, kernel_size=3, padding=1),
+                nn.BatchNorm2d(embed_dim),
+                nn.ReLU(inplace=True),
+            )
+        elif variant == "light_hetero":
+            self.encoder = nn.Sequential(
+                nn.Conv2d(in_channels, hidden_dim, kernel_size=1, bias=False),
+                nn.BatchNorm2d(hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(hidden_dim, embed_dim, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(embed_dim),
+                nn.ReLU(inplace=True),
+            )
+        elif variant == "hetero":
+            self.encoder = nn.Sequential(
+                nn.Conv2d(in_channels, hidden_dim, kernel_size=1, bias=False),
+                nn.BatchNorm2d(hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(hidden_dim, mid_dim, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(mid_dim),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(mid_dim, embed_dim, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(embed_dim),
+                nn.ReLU(inplace=True),
+                ResidualConvBlock(embed_dim),
+            )
+        else:
+            raise ValueError(f"Unsupported HSI encoder variant: {variant}")
         self.out_channels = embed_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() != 4:
             raise ValueError(f"Expected HSI input with shape (B, C, H, W), got {tuple(x.shape)}")
-        x = self.spectral_mixer(x)
-        return self.spatial_encoder(x)
+        return self.encoder(x)
 
 
 class LidarCnnEncoder(nn.Module):
@@ -75,23 +95,46 @@ class LidarCnnEncoder(nn.Module):
     输出：（B, 128, H, W）
     使用轻量空间 CNN + 残差块，更强调结构与边界信息。
     """
-    def __init__(self, in_channels: int = 1, embed_dim: int = 128) -> None:
+    def __init__(self, in_channels: int = 1, embed_dim: int = 128, variant: str = "hetero") -> None:
         super().__init__()
+        self.variant = variant
         hidden_dim = max(embed_dim // 2, 32)
         stem_dim = max(embed_dim // 4, 16)
-        self.encoder = nn.Sequential(
-            nn.Conv2d(in_channels, stem_dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(stem_dim),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(stem_dim, hidden_dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(hidden_dim),
-            nn.ReLU(inplace=True),
-            ResidualConvBlock(hidden_dim),
-            nn.Conv2d(hidden_dim, embed_dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(embed_dim),
-            nn.ReLU(inplace=True),
-            ResidualConvBlock(embed_dim),
-        )
+        if variant == "simple":
+            self.encoder = nn.Sequential(
+                nn.Conv2d(in_channels, hidden_dim, kernel_size=3, padding=1),
+                nn.BatchNorm2d(hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(hidden_dim, embed_dim, kernel_size=3, padding=1),
+                nn.BatchNorm2d(embed_dim),
+                nn.ReLU(inplace=True),
+            )
+        elif variant == "light_hetero":
+            self.encoder = nn.Sequential(
+                nn.Conv2d(in_channels, stem_dim, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(stem_dim),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(stem_dim, embed_dim, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(embed_dim),
+                nn.ReLU(inplace=True),
+                ResidualConvBlock(embed_dim),
+            )
+        elif variant == "hetero":
+            self.encoder = nn.Sequential(
+                nn.Conv2d(in_channels, stem_dim, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(stem_dim),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(stem_dim, hidden_dim, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(hidden_dim),
+                nn.ReLU(inplace=True),
+                ResidualConvBlock(hidden_dim),
+                nn.Conv2d(hidden_dim, embed_dim, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(embed_dim),
+                nn.ReLU(inplace=True),
+                ResidualConvBlock(embed_dim),
+            )
+        else:
+            raise ValueError(f"Unsupported LiDAR encoder variant: {variant}")
         self.out_channels = embed_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

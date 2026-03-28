@@ -23,7 +23,13 @@ class ConcatFusionHead(nn.Module):
 
 
 class CrossTokenAttention(nn.Module):
-    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.1) -> None:
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        dropout: float = 0.1,
+        conservative: bool = False,
+    ) -> None:
         super().__init__()
         self.norm_q = nn.LayerNorm(embed_dim)
         self.norm_kv = nn.LayerNorm(embed_dim)
@@ -34,12 +40,20 @@ class CrossTokenAttention(nn.Module):
             batch_first=True,
         )
         self.dropout = nn.Dropout(dropout)
+        self.conservative = conservative
+        if conservative:
+            self.residual_scale = nn.Parameter(torch.tensor(0.1))
+        else:
+            self.register_parameter("residual_scale", None)
 
     def forward(self, cls_token: torch.Tensor, context_tokens: torch.Tensor) -> torch.Tensor:
         q = self.norm_q(cls_token)
         kv = self.norm_kv(context_tokens)
         updated, _ = self.attn(q, kv, kv, need_weights=False)
-        return cls_token + self.dropout(updated)
+        updated = self.dropout(updated)
+        if self.conservative:
+            updated = self.residual_scale * updated
+        return cls_token + updated
 
 
 class FeedForwardBlock(nn.Module):
@@ -65,10 +79,17 @@ class BiDirectionalClassTokenAttention(nn.Module):
     输出：更新后的两路 token 序列(B, N, D)
     """
 
-    def __init__(self, embed_dim: int, num_heads: int, mlp_dim: int, dropout: float = 0.1) -> None:
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        mlp_dim: int,
+        dropout: float = 0.1,
+        conservative: bool = False,
+    ) -> None:
         super().__init__()
-        self.hsi_cls_queries_lidar = CrossTokenAttention(embed_dim, num_heads, dropout=dropout)
-        self.lidar_cls_queries_hsi = CrossTokenAttention(embed_dim, num_heads, dropout=dropout)
+        self.hsi_cls_queries_lidar = CrossTokenAttention(embed_dim, num_heads, dropout=dropout, conservative=conservative)
+        self.lidar_cls_queries_hsi = CrossTokenAttention(embed_dim, num_heads, dropout=dropout, conservative=conservative)
         self.hsi_cls_ffn = FeedForwardBlock(embed_dim, mlp_dim, dropout=dropout)
         self.lidar_cls_ffn = FeedForwardBlock(embed_dim, mlp_dim, dropout=dropout)
 
@@ -98,9 +119,14 @@ class GatedCrossModalFusion(nn.Module):
     - fused = g * h_cls + (1-g) * l_cls
     """
 
-    def __init__(self, embed_dim: int) -> None:
+    def __init__(self, embed_dim: int, conservative: bool = False) -> None:
         super().__init__()
         self.gate = nn.Linear(embed_dim * 2, embed_dim)
+        self.conservative = conservative
+        if conservative:
+            self.fusion_strength = nn.Parameter(torch.tensor(0.25))
+        else:
+            self.register_parameter("fusion_strength", None)
 
     def compute_gate(self, cls_h: torch.Tensor, cls_l: torch.Tensor) -> torch.Tensor:
         if cls_h.shape != cls_l.shape:
@@ -111,7 +137,12 @@ class GatedCrossModalFusion(nn.Module):
         if cls_h.shape != cls_l.shape:
             raise ValueError("GatedCrossModalFusion 期望 cls_h 和 cls_l 形状一致")
         gate = self.compute_gate(cls_h, cls_l)
-        return gate * cls_h + (1.0 - gate) * cls_l
+        fused = gate * cls_h + (1.0 - gate) * cls_l
+        if not self.conservative:
+            return fused
+        base = 0.5 * (cls_h + cls_l)
+        strength = torch.clamp(self.fusion_strength, min=0.0, max=1.0)
+        return base + strength * (fused - base)
 
 
 class SimpleAverageFusion(nn.Module):
