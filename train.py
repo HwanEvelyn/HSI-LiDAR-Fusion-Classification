@@ -120,6 +120,9 @@ def collect_model_config(
         "preprocess_scope": args.preprocess_scope,
         "split_mode": args.split_mode,
         "val_spatial_buffer": effective_val_spatial_buffer,
+        "train_augment": args.train_augment,
+        "label_smoothing": args.label_smoothing,
+        "early_stopping_patience": args.early_stopping_patience,
     }
     if hasattr(model, "get_config"):
         config.update(model.get_config())
@@ -164,6 +167,7 @@ def build_dataloaders(
     device: torch.device,
     val_ratio: float,
     val_spatial_buffer: int,
+    train_augment: str,
 ) -> SplitLoaders:
     data = load_dataset(data_root)
 
@@ -220,7 +224,7 @@ def build_dataloaders(
         if pca_components > 0 and pca_components < hsi.shape[-1]:
             hsi = pca_reduce(hsi, n_components=pca_components).x_pca
 
-    train_dataset_full = HsiLidarPatchDataset(hsi, lidar, train_items, patch_size)
+    train_dataset_full = HsiLidarPatchDataset(hsi, lidar, train_items, patch_size, augment_mode=train_augment)
     val_dataset = HsiLidarPatchDataset(hsi, lidar, val_items, patch_size)
     test_dataset = HsiLidarPatchDataset(hsi, lidar, test_items, patch_size)
 
@@ -398,10 +402,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--val-spatial-buffer", type=int, default=-1)
     parser.add_argument("--selection-metric", type=str, choices=["val_oa", "val_kappa"], default="val_oa")
+    parser.add_argument("--train-augment", type=str, choices=["none", "d4"], default="none")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--label-smoothing", type=float, default=0.0)
+    parser.add_argument("--early-stopping-patience", type=int, default=0)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--split-seed", type=int, default=42)
@@ -490,6 +497,7 @@ def main() -> None:
         device=device,
         val_ratio=args.val_ratio,
         val_spatial_buffer=args.val_spatial_buffer if args.val_spatial_buffer >= 0 else args.patch_size // 2,
+        train_augment=args.train_augment,
     )
 
     model = create_model(args, loaders.hsi_channels, loaders.lidar_channels, loaders.num_classes)
@@ -498,7 +506,7 @@ def main() -> None:
         logger.log("Using device: cpu")
     model = model.to(device)
     model_config = collect_model_config(model, args, loaders.hsi_channels, loaders.lidar_channels, loaders.num_classes)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
     optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     logger.log(
@@ -514,6 +522,7 @@ def main() -> None:
 
     best_score = float("-inf")
     best_metrics: Dict[str, float] | None = None
+    epochs_without_improve = 0
 
     for epoch in range(1, args.epochs + 1):
         train_stats = run_epoch(
@@ -541,6 +550,7 @@ def main() -> None:
         current_score = get_selection_score(val_metrics, args.selection_metric)
         if current_score > best_score:
             best_score = current_score
+            epochs_without_improve = 0
             best_metrics = {
                 "epoch": epoch,
                 "train_ce": float(train_stats.ce_loss),
@@ -569,6 +579,15 @@ def main() -> None:
             )
             with (output_dir / "best_metrics.json").open("w", encoding="utf-8") as f:
                 json.dump(best_metrics, f, indent=2)
+        else:
+            epochs_without_improve += 1
+
+        if args.early_stopping_patience > 0 and epochs_without_improve >= args.early_stopping_patience:
+            logger.log(
+                f"Early stopping triggered at epoch {epoch:03d} | "
+                f"no improvement for {epochs_without_improve} epochs on {args.selection_metric}"
+            )
+            break
 
     if best_metrics is None:
         raise RuntimeError("Training finished without producing best metrics")

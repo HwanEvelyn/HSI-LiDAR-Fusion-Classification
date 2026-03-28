@@ -249,15 +249,40 @@ class HsiLidarPatchDataset(Dataset):
             lidar: np.ndarray,
             items: List[IndexItem],
             patch_size: int,
+            augment_mode: str = "none",
     ) -> None:
         self.items = items
         self.patch_size = patch_size
+        self.augment_mode = augment_mode
         self.pad = patch_size // 2
         self.hsi_pad = pad_reflect(hsi, self.pad)  # (H+2*pad, W+2*pad, C)
         self.lidar_pad = pad_reflect(lidar, self.pad)  # (H+2*pad, W+2*pad)
 
     def __len__(self) -> int:
         return len(self.items)
+
+    def _apply_sync_augmentation(
+        self,
+        hsi_t: torch.Tensor,
+        lidar_t: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.augment_mode == "none":
+            return hsi_t, lidar_t
+        if self.augment_mode != "d4":
+            raise ValueError(f"Unsupported augment_mode: {self.augment_mode}")
+
+        # D4 几何增强：旋转 0/90/180/270 度，并随机做水平/垂直翻转。
+        k = int(torch.randint(0, 4, (1,)).item())
+        if k:
+            hsi_t = torch.rot90(hsi_t, k=k, dims=(1, 2))
+            lidar_t = torch.rot90(lidar_t, k=k, dims=(1, 2))
+        if bool(torch.randint(0, 2, (1,)).item()):
+            hsi_t = torch.flip(hsi_t, dims=(2,))
+            lidar_t = torch.flip(lidar_t, dims=(2,))
+        if bool(torch.randint(0, 2, (1,)).item()):
+            hsi_t = torch.flip(hsi_t, dims=(1,))
+            lidar_t = torch.flip(lidar_t, dims=(1,))
+        return hsi_t.contiguous(), lidar_t.contiguous()
     
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         item = self.items[idx]
@@ -273,5 +298,6 @@ class HsiLidarPatchDataset(Dataset):
             lidar_t = torch.from_numpy(lidar_patch).unsqueeze(0).contiguous()
         else:
             lidar_t = torch.from_numpy(lidar_patch).permute(2, 0, 1).contiguous()
+        hsi_t, lidar_t = self._apply_sync_augmentation(hsi_t, lidar_t)
         y_t = torch.tensor(y, dtype=torch.long)  # (scalar)
         return hsi_t, lidar_t, y_t
