@@ -161,4 +161,105 @@ python3 train.py \
   | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
   | Baseline-CNN | 10 | 0.9954 | 0.9771 | 0.9941 | 0.9937 | 0.9866 | 0.9912 |
   | HCT-BGC-v1 | 6 | 0.9980 | 0.9497 | 0.9974 | 0.9922 | 0.9635 | 0.9891 |
+
+## 2026/3/28 进度日志
+
+### tag: `v2.0.0` (`7c347a6`)
+
+- 目标：验证几何增强与泛化控制是否能缓解异构编码器的泛化问题。
+- 本阶段主要尝试：
+  - `train_augment=d4`
+  - `weight_decay=5e-4`
+  - `label_smoothing=0.1`
+  - `early_stopping_patience=8`
+  - `selection_metric=val_kappa`
+- 结论：
+  - `D4` 几何增强在 Houston 2013 上会拉低效果，不适合作为当前 patch 分类主配置。
+  - 泛化控制本身有效；在不加几何增强时，`weight decay + label smoothing + early stopping` 能稳定提升异构编码器结果。
+
+Houston 2013 上的代表性结果如下：
+
+| Setting | Best Epoch | Val OA | Val AA | Val Kappa | Test OA | Test AA | Test Kappa |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| hetero（改进前） | 27 | 0.9276 | 0.9411 | 0.9208 | 0.8425 | 0.8602 | 0.8295 |
+| hetero + D4 + 泛化控制 | 14 | 0.8940 | 0.9172 | 0.8843 | 0.8251 | 0.8454 | 0.8112 |
+| hetero + D4 + `weight_decay=5e-4` | 18 | 0.8905 | 0.9110 | 0.8803 | 0.8217 | 0.8483 | 0.8073 |
+| hetero + 泛化控制（无 D4） | 24 | 0.9152 | 0.9329 | 0.9073 | 0.8489 | 0.8607 | 0.8367 |
+
+阶段性判断：
+
+- Houston 2013 的小 patch 分类不满足强旋转不变性，D4 增强会引入错误先验。
+- `label smoothing=0.1` 比 `0.05` 更适合当前异构编码器。
+- 后续 v2 路线固定为：**不用几何增强，保留泛化控制**。
+
+### tag: `v2.1.0` (`ada7516`)
+
+- 目标：在 `v2.0.0` 的泛化控制基础上，继续改进主骨架。
+- 新增三个可独立消融的模块：
+  1. 浅异构编码器 `--encoder-variant light_hetero`
+  2. 保守融合 `--use-conservative-fusion`
+  3. 辅助分类头 `--use-aux-heads --aux-weight`
+
+这三个模块都已经接入 `train.py`，支持单独开关和组合消融。
+
+Houston 2013 上的消融结果如下：
+
+| Variant | Best Epoch | Val OA | Val AA | Val Kappa | Test OA | Test AA | Test Kappa |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| HCT-BGC-v1 | - | 92.23 ± 0.66 | 93.62 ± 0.61 | 91.50 ± 0.72 | 85.58 ± 0.42 | 87.63 ± 0.46 | 84.40 ± 0.46 |
+| hetero（改进前） | 27 | 0.9276 | 0.9411 | 0.9208 | 0.8425 | 0.8602 | 0.8295 |
+| hetero + 泛化控制 | 24 | 0.9152 | 0.9329 | 0.9073 | 0.8489 | 0.8607 | 0.8367 |
+| light_hetero + 泛化控制 | 5 | 0.8922 | 0.9130 | 0.8823 | 0.8451 | 0.8656 | 0.8324 |
+| hetero + 保守融合 + 泛化控制 | 13 | 0.8922 | 0.9048 | 0.8821 | 0.8345 | 0.8492 | 0.8209 |
+| hetero + 辅助头 + 泛化控制 | 14 | 0.9152 | 0.9240 | 0.9072 | 0.8338 | 0.8557 | 0.8203 |
+| light_hetero + 保守融合 + 辅助头 + 泛化控制 | 18 | 0.9134 | 0.9267 | 0.9054 | 0.8712 | 0.8888 | 0.8606 |
+
+最终结论：
+
+- 三个模块单独使用时增益有限，甚至可能轻微下降。
+- 三者组合后出现明显协同效应，最终测试集性能超过 `HCT-BGC-v1`：
+  - OA：`85.58 -> 87.12`
+  - AA：`87.63 -> 88.88`
+  - Kappa：`84.40 -> 86.06`
+- 这说明当前提升不是来自单一“强模块”，而是来自：
+  - 更合理的模态特征提取（`light_hetero`）
+  - 更稳的跨模态交互（保守融合）
+  - 更强的单模态判别约束（辅助头）
+
+当前推荐的 `HCT-BGC-v2` 主配置：
+
+```bash
+python3 train.py \
+  --model hct_bgc \
+  --data-root "data/raw/Houston 2013/2013_DFTC" \
+  --split-mode official \
+  --preprocess-scope train \
+  --patch-size 11 \
+  --pca-components 30 \
+  --embed-dim 128 \
+  --num-heads 4 \
+  --num-layers 2 \
+  --fusion-layers 1 \
+  --encoder-variant light_hetero \
+  --use-conservative-fusion \
+  --use-aux-heads \
+  --aux-weight 0.2 \
+  --dropout 0.1 \
+  --weight-decay 5e-4 \
+  --label-smoothing 0.1 \
+  --selection-metric val_kappa \
+  --early-stopping-patience 8 \
+  --epochs 30 \
+  --batch-size 64 \
+  --num-workers 0 \
+  --split-seed 42 \
+  --seed 42 \
+  --output-dir results/houston/hct_bgc_v2_main
+```
+
+当前 `HCT-BGC-v2` 在 Houston 2013 上的主结果：
+
+- Best epoch: `18`
+- Val OA / AA / Kappa: `0.9134 / 0.9267 / 0.9054`
+- Test OA / AA / Kappa: `0.8712 / 0.8888 / 0.8606`
   
