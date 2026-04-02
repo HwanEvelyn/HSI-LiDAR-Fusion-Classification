@@ -1,0 +1,28 @@
+name: hct_bgc_v2_houston_fewshot5
+output_root: results/repeats
+train_args:
+  model: hct_bgc
+  data_root: data/raw/Houston 2013/2013_DFTC
+  split_mode: fewshot
+  train_per_class: 5
+  val_per_class: 5
+  preprocess_scope: train
+  patch_size: 11
+  pca_components: 30
+  embed_dim: 128
+  num_heads: 4
+  num_layers: 2
+  fusion_layers: 1
+  encoder_variant: light_hetero
+  use_conservative_fusion: true
+  use_aux_heads: true
+  aux_weight: 0.2
+  dropout: 0.1
+  weight_decay: 5e-4
+  label_smoothing: 0.1
+  selection_metric: val_kappa
+  early_stopping_patience: 30
+  epochs: 100
+  batch_size: 64
+  num_workers: 0
+  split_seed: 42

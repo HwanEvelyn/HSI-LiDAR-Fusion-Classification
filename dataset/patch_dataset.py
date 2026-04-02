@@ -239,6 +239,58 @@ def build_index_three_way(
     rng.shuffle(test_items)
     return train_items, val_items, test_items, num_classes
 
+
+def build_index_fewshot(
+    gt: np.ndarray,
+    train_per_class: int,
+    val_per_class: int = 0,
+    seed: int = 0,
+) -> Tuple[List[IndexItem], List[IndexItem], List[IndexItem], int]:
+    """
+    Few-shot 划分：
+    - 每类固定取 train_per_class 个样本用于训练
+    - 可选再取 val_per_class 个样本用于验证
+    - 剩余样本全部用于测试
+    """
+    if train_per_class <= 0:
+        raise ValueError("train_per_class 必须 > 0")
+    if val_per_class < 0:
+        raise ValueError("val_per_class 必须 >= 0")
+
+    rng = np.random.default_rng(seed)
+    labels = gt[gt > 0]
+    num_classes = int(labels.max())
+
+    train_items: List[IndexItem] = []
+    val_items: List[IndexItem] = []
+    test_items: List[IndexItem] = []
+
+    for cls in range(1, num_classes + 1):
+        coords = np.argwhere(gt == cls)
+        rng.shuffle(coords)
+        n_total = len(coords)
+        required = train_per_class + val_per_class
+        if n_total <= required:
+            raise ValueError(
+                f"类别 {cls} 样本不足：总数={n_total}，但需要 train_per_class + val_per_class = {required}"
+            )
+
+        train_coords = coords[:train_per_class]
+        val_coords = coords[train_per_class : train_per_class + val_per_class]
+        test_coords = coords[train_per_class + val_per_class :]
+
+        for r, c in train_coords:
+            train_items.append(IndexItem(int(r), int(c), cls - 1))
+        for r, c in val_coords:
+            val_items.append(IndexItem(int(r), int(c), cls - 1))
+        for r, c in test_coords:
+            test_items.append(IndexItem(int(r), int(c), cls - 1))
+
+    rng.shuffle(train_items)
+    rng.shuffle(val_items)
+    rng.shuffle(test_items)
+    return train_items, val_items, test_items, num_classes
+
 class HsiLidarPatchDataset(Dataset):
     """
     根据 IndexItem 提取 patch 数据

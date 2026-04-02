@@ -14,7 +14,13 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader
 
 from dataset.mat_loader import build_official_houston_split, load_dataset
-from dataset.patch_dataset import HsiLidarPatchDataset, IndexItem, build_index_three_way, split_items_spatial_holdout
+from dataset.patch_dataset import (
+    HsiLidarPatchDataset,
+    IndexItem,
+    build_index_fewshot,
+    build_index_three_way,
+    split_items_spatial_holdout,
+)
 from dataset.preprocessing import pca_reduce, pca_reduce_with_mask, zscore_norm, zscore_norm_with_mask
 from models.baseline_cnn import BaselineFusionNet
 from models.comparison_models import CnnTransformerNoFusion, HsiOnlyNet, LidarOnlyNet
@@ -119,6 +125,8 @@ def collect_model_config(
         "contrastive_weight": args.contrastive_weight,
         "temperature": args.temperature,
         "split_seed": args.split_seed,
+        "train_per_class": args.train_per_class,
+        "val_per_class": args.val_per_class,
         "val_ratio": args.val_ratio,
         "selection_metric": args.selection_metric,
         "preprocess_scope": args.preprocess_scope,
@@ -176,10 +184,19 @@ def build_dataloaders(
     val_ratio: float,
     val_spatial_buffer: int,
     train_augment: str,
+    train_per_class: int,
+    val_per_class: int,
 ) -> SplitLoaders:
     data = load_dataset(data_root)
 
-    if split_mode == "official" and data.dataset_name == "houston":
+    if split_mode == "fewshot":
+        train_items, val_items, test_items, num_classes = build_index_fewshot(
+            data.gt,
+            train_per_class=train_per_class,
+            val_per_class=val_per_class,
+            seed=split_seed,
+        )
+    elif split_mode == "official" and data.dataset_name == "houston":
         official_train_items, test_items, num_classes = build_official_houston_split(data)
         train_items, val_items = split_items_spatial_holdout(
             official_train_items,
@@ -420,10 +437,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-contrastive", action="store_true")
     parser.add_argument("--contrastive-weight", type=float, default=0.1)
     parser.add_argument("--temperature", type=float, default=0.1)
-    parser.add_argument("--split-mode", type=str, choices=["random", "official"], default="official")
+    parser.add_argument("--split-mode", type=str, choices=["random", "official", "fewshot"], default="official")
     parser.add_argument("--preprocess-scope", type=str, choices=["full", "train"], default="train")
     parser.add_argument("--train-ratio", type=float, default=0.6)
     parser.add_argument("--val-ratio", type=float, default=0.2)
+    parser.add_argument("--train-per-class", type=int, default=0)
+    parser.add_argument("--val-per-class", type=int, default=5)
     parser.add_argument("--val-spatial-buffer", type=int, default=-1)
     parser.add_argument("--selection-metric", type=str, choices=["val_oa", "val_kappa"], default="val_oa")
     parser.add_argument("--train-augment", type=str, choices=["none", "d4"], default="none")
@@ -493,6 +512,8 @@ def main() -> None:
 
     if args.use_contrastive and args.model != "hct_bgc":
         raise ValueError("--use-contrastive 当前仅支持 --model hct_bgc")
+    if args.split_mode == "fewshot" and args.train_per_class <= 0:
+        raise ValueError("--split-mode fewshot 时，--train-per-class 必须 > 0")
 
     data_root = Path(args.data_root)
     if not data_root.exists():
@@ -522,6 +543,8 @@ def main() -> None:
         val_ratio=args.val_ratio,
         val_spatial_buffer=args.val_spatial_buffer if args.val_spatial_buffer >= 0 else args.patch_size // 2,
         train_augment=args.train_augment,
+        train_per_class=args.train_per_class,
+        val_per_class=args.val_per_class,
     )
 
     model = create_model(args, loaders.hsi_channels, loaders.lidar_channels, loaders.num_classes)
