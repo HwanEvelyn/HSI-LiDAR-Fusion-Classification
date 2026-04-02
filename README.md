@@ -262,4 +262,32 @@ python3 train.py \
 - Best epoch: `18`
 - Val OA / AA / Kappa: `0.9134 / 0.9267 / 0.9054`
 - Test OA / AA / Kappa: `0.8712 / 0.8888 / 0.8606`
-  
+## 2026/4/1 进度日志
+### 当前协议 vs 参考论文协议
+
+| 项目 | 当前项目协议 | 参考论文协议 | 当前状态 |
+| --- | --- | --- | --- |
+| 数据集 | Houston 2013、Trento | Houston 2013、Trento、MUUFL、Augsburg | 仅前两者已接入 |
+| PCA 维度 | `30` | `30` | 已对齐 |
+| Patch size | `11` | `11` | 已对齐 |
+| Batch size | `64` | `64` | 已对齐 |
+| Epoch 上限 | 常用 `30` | `100` | 已新增 `--protocol-style paper` 自动对齐为 `100` |
+| Optimizer | Adam | Adam | 已对齐 |
+| 学习率 | 常用 `1e-3`，部分实验手动调节 | 按数据集设定：Houston/Trento `1e-3` | 已新增论文协议预设 |
+| 划分方式 | Houston 采用官方 split + train/val；Trento 采用自定义划分 | 论文描述更接近官方/常规 split 或多次 random split | 部分对齐，Trento 仍受本地数据限制 |
+| 验证集策略 | 使用 `val` 选模，避免 test 选模 | 论文未明确说明 val 细节 | 保留当前更规范做法 |
+| 早停 / smoothing / 几何增强 | 项目中做过额外探索 | 论文未强调 | `paper` 协议默认关闭这些额外项 |
+| 重复实验 | 固定 split 的 mean ± std；或脚本化 repeat | 多次随机实验 mean ± std | `paper` 模式下 `run_repeat.py` 默认让 `split_seed` 随 `seed` 变化 |
+
+说明：
+
+- Houston 2013 本地具备官方 train/test 标注，因此 `paper` 协议优先使用官方 split。
+- Trento 本地当前没有官方 train/test mask，所以 `paper` 协议只能近似成 random split，无法做到完全同口径。
+协议对齐后，结果好像还是没有什么提升，我们继续踩用之前自己的协议吧。
+
+### 第二步尝试修改HSI 分支：mini 3D spectral-spatial stem + 2D conv
+- 先沿光谱维做 3D 卷积
+- 再做 3D 空间卷积
+- 沿光谱维聚合
+- 最后接 2D 卷积和残差块
+性能下降。
