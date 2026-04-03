@@ -92,6 +92,10 @@ def create_model(args: argparse.Namespace | dict, hsi_channels: int, lidar_chann
             fusion_layers=fusion_layers,
             dropout=args.get("dropout", 0.1) if isinstance(args, dict) else args.dropout,
             patch_size=args.get("patch_size", 11) if isinstance(args, dict) else args.patch_size,
+            context_patch_size=(
+                args.get("context_patch_size", 0) if isinstance(args, dict) else args.context_patch_size
+            ) or None,
+            scale_fusion_mode=args.get("scale_fusion_mode", "residual") if isinstance(args, dict) else args.scale_fusion_mode,
             disable_gate=args.get("disable_gate", False) if isinstance(args, dict) else args.disable_gate,
             encoder_variant=args.get("encoder_variant", "hetero") if isinstance(args, dict) else args.encoder_variant,
             use_conservative_fusion=args.get("use_conservative_fusion", False) if isinstance(args, dict) else args.use_conservative_fusion,
@@ -115,7 +119,8 @@ def collect_model_config(
     lidar_channels: int,
     num_classes: int,
 ) -> Dict[str, object]:
-    effective_val_spatial_buffer = args.val_spatial_buffer if args.val_spatial_buffer >= 0 else args.patch_size // 2
+    extraction_patch_size = max(args.patch_size, args.context_patch_size)
+    effective_val_spatial_buffer = args.val_spatial_buffer if args.val_spatial_buffer >= 0 else extraction_patch_size // 2
     config: Dict[str, object] = {
         "model": args.model,
         "hsi_in_channels": hsi_channels,
@@ -127,6 +132,8 @@ def collect_model_config(
         "split_seed": args.split_seed,
         "train_per_class": args.train_per_class,
         "val_per_class": args.val_per_class,
+        "context_patch_size": args.context_patch_size,
+        "scale_fusion_mode": args.scale_fusion_mode,
         "val_ratio": args.val_ratio,
         "selection_metric": args.selection_metric,
         "preprocess_scope": args.preprocess_scope,
@@ -423,6 +430,8 @@ def parse_args() -> argparse.Namespace:
         default="baseline",
     )
     parser.add_argument("--patch-size", type=int, default=11)
+    parser.add_argument("--context-patch-size", type=int, default=0)
+    parser.add_argument("--scale-fusion-mode", type=str, choices=["residual", "gated", "average"], default="residual")
     parser.add_argument("--pca-components", type=int, default=30)
     parser.add_argument("--embed-dim", type=int, default=128)
     parser.add_argument("--num-heads", type=int, default=4)
@@ -514,6 +523,10 @@ def main() -> None:
         raise ValueError("--use-contrastive 当前仅支持 --model hct_bgc")
     if args.split_mode == "fewshot" and args.train_per_class <= 0:
         raise ValueError("--split-mode fewshot 时，--train-per-class 必须 > 0")
+    if args.context_patch_size < 0:
+        raise ValueError("--context-patch-size 必须 >= 0")
+    if args.context_patch_size and args.context_patch_size < args.patch_size:
+        raise ValueError("--context-patch-size 必须 >= --patch-size")
 
     data_root = Path(args.data_root)
     if not data_root.exists():
@@ -529,9 +542,10 @@ def main() -> None:
     if args.preprocess_scope != "train":
         logger.log("Warning: preprocess_scope=full 会使用全图统计量，存在数据泄漏风险；论文实验建议使用 preprocess_scope=train。")
 
+    extraction_patch_size = max(args.patch_size, args.context_patch_size)
     loaders = build_dataloaders(
         data_root=str(data_root),
-        patch_size=args.patch_size,
+        patch_size=extraction_patch_size,
         pca_components=args.pca_components,
         train_ratio=args.train_ratio,
         batch_size=args.batch_size,
@@ -541,7 +555,7 @@ def main() -> None:
         preprocess_scope=args.preprocess_scope,
         device=device,
         val_ratio=args.val_ratio,
-        val_spatial_buffer=args.val_spatial_buffer if args.val_spatial_buffer >= 0 else args.patch_size // 2,
+        val_spatial_buffer=args.val_spatial_buffer if args.val_spatial_buffer >= 0 else extraction_patch_size // 2,
         train_augment=args.train_augment,
         train_per_class=args.train_per_class,
         val_per_class=args.val_per_class,
