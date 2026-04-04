@@ -95,6 +95,7 @@ def create_model(args: argparse.Namespace | dict, hsi_channels: int, lidar_chann
             context_patch_size=(
                 args.get("context_patch_size", 0) if isinstance(args, dict) else args.context_patch_size
             ) or None,
+            context_token_size=args.get("context_token_size", 0) if isinstance(args, dict) else args.context_token_size,
             scale_fusion_mode=args.get("scale_fusion_mode", "residual") if isinstance(args, dict) else args.scale_fusion_mode,
             disable_gate=args.get("disable_gate", False) if isinstance(args, dict) else args.disable_gate,
             encoder_variant=args.get("encoder_variant", "hetero") if isinstance(args, dict) else args.encoder_variant,
@@ -133,6 +134,7 @@ def collect_model_config(
         "train_per_class": args.train_per_class,
         "val_per_class": args.val_per_class,
         "context_patch_size": args.context_patch_size,
+        "context_token_size": args.context_token_size,
         "scale_fusion_mode": args.scale_fusion_mode,
         "val_ratio": args.val_ratio,
         "selection_metric": args.selection_metric,
@@ -431,6 +433,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--patch-size", type=int, default=11)
     parser.add_argument("--context-patch-size", type=int, default=0)
+    parser.add_argument("--context-token-size", type=int, default=0)
     parser.add_argument("--scale-fusion-mode", type=str, choices=["residual", "gated", "average"], default="residual")
     parser.add_argument("--pca-components", type=int, default=30)
     parser.add_argument("--embed-dim", type=int, default=128)
@@ -527,6 +530,10 @@ def main() -> None:
         raise ValueError("--context-patch-size 必须 >= 0")
     if args.context_patch_size and args.context_patch_size < args.patch_size:
         raise ValueError("--context-patch-size 必须 >= --patch-size")
+    if args.context_token_size < 0:
+        raise ValueError("--context-token-size 必须 >= 0")
+    if args.context_token_size and args.context_patch_size == 0:
+        raise ValueError("--context-token-size 仅在设置 --context-patch-size 时有效")
 
     data_root = Path(args.data_root)
     if not data_root.exists():

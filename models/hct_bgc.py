@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Dict
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 from .fusion_blocks import (
@@ -118,6 +119,7 @@ class HCT_BGC(nn.Module):
         dropout: float = 0.1,
         patch_size: int = 11,
         context_patch_size: int | None = None,
+        context_token_size: int = 0,
         scale_fusion_mode: str = "residual",
         disable_gate: bool = False,
         encoder_variant: str = "hetero",
@@ -129,12 +131,17 @@ class HCT_BGC(nn.Module):
             raise ValueError(f"HCT_BGC-v1 仅支持 1-3 层 Bi-CTA 堆叠，当前收到 fusion_layers={fusion_layers}")
         if context_patch_size is not None and context_patch_size < patch_size:
             raise ValueError("context_patch_size 必须 >= patch_size")
+        if context_token_size < 0:
+            raise ValueError("context_token_size 必须 >= 0")
         self.patch_size = patch_size
         self.context_patch_size = context_patch_size
         self.use_multiscale = context_patch_size is not None and context_patch_size > patch_size
         num_spatial_tokens = patch_size * patch_size
+        self.context_token_size = context_token_size if context_token_size > 0 else (
+            context_patch_size if self.use_multiscale else patch_size
+        )
         context_spatial_tokens = (
-            context_patch_size * context_patch_size if self.use_multiscale else num_spatial_tokens
+            self.context_token_size * self.context_token_size if self.use_multiscale else num_spatial_tokens
         )
         self.config = {
             "embed_dim": embed_dim,
@@ -145,6 +152,7 @@ class HCT_BGC(nn.Module):
             "dropout": dropout,
             "patch_size": patch_size,
             "context_patch_size": context_patch_size if context_patch_size is not None else patch_size,
+            "context_token_size": self.context_token_size,
             "multiscale_mode": "cross_scale_residual" if self.use_multiscale else "single_scale",
             "scale_fusion_mode": scale_fusion_mode,
             "num_spatial_tokens": num_spatial_tokens,
@@ -277,6 +285,13 @@ class HCT_BGC(nn.Module):
         left = (x.size(-1) - crop_size) // 2
         return x[..., top : top + crop_size, left : left + crop_size]
 
+    def _pool_context_feat(self, feat: torch.Tensor) -> torch.Tensor:
+        if not self.use_multiscale:
+            return feat
+        if feat.size(-1) == self.context_token_size and feat.size(-2) == self.context_token_size:
+            return feat
+        return F.adaptive_avg_pool2d(feat, output_size=(self.context_token_size, self.context_token_size))
+
     def forward(self, hsi: torch.Tensor, lidar: torch.Tensor) -> Dict[str, torch.Tensor]:
         if self.use_multiscale:
             hsi_local = self._center_crop(hsi, self.patch_size)
@@ -284,8 +299,8 @@ class HCT_BGC(nn.Module):
 
             h_local_feat = self.hsi_encoder(hsi_local)
             l_local_feat = self.lidar_encoder(lidar_local)
-            h_context_feat = self.hsi_encoder(hsi)
-            l_context_feat = self.lidar_encoder(lidar)
+            h_context_feat = self._pool_context_feat(self.hsi_encoder(hsi))
+            l_context_feat = self._pool_context_feat(self.lidar_encoder(lidar))
 
             h_local_tokens = self.h_te(self.hsi_tokenizer(h_local_feat))
             l_local_tokens = self.l_te(self.lidar_tokenizer(l_local_feat))
