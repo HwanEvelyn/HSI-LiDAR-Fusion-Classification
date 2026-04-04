@@ -457,7 +457,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-per-class", type=int, default=5)
     parser.add_argument("--val-spatial-buffer", type=int, default=-1)
     parser.add_argument("--selection-metric", type=str, choices=["val_oa", "val_kappa"], default="val_oa")
-    parser.add_argument("--train-augment", type=str, choices=["none", "d4"], default="none")
+    parser.add_argument(
+        "--train-augment",
+        type=str,
+        choices=["none", "d4", "flip_only", "rot180", "spectral_noise"],
+        default="none",
+    )
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-3)
