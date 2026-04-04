@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.optim import Adam
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from dataset.mat_loader import build_official_houston_split, load_dataset
 from dataset.patch_dataset import (
@@ -39,6 +39,25 @@ class SplitLoaders:
     lidar_channels: int
     num_classes: int
     split_sizes: Dict[str, int]
+
+
+def build_balanced_sampler(items: list[IndexItem], num_classes: int, seed: int) -> WeightedRandomSampler:
+    class_counts = np.zeros(num_classes, dtype=np.int64)
+    for item in items:
+        class_counts[item.y] += 1
+    if np.any(class_counts == 0):
+        missing = np.flatnonzero(class_counts == 0).tolist()
+        raise RuntimeError(f"Balanced sampler 发现空类别，无法构建采样器: {missing}")
+
+    sample_weights = np.asarray([1.0 / class_counts[item.y] for item in items], dtype=np.float64)
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    return WeightedRandomSampler(
+        weights=torch.as_tensor(sample_weights, dtype=torch.double),
+        num_samples=len(items),
+        replacement=True,
+        generator=generator,
+    )
 
 
 @dataclass
@@ -142,6 +161,7 @@ def collect_model_config(
         "split_mode": args.split_mode,
         "val_spatial_buffer": effective_val_spatial_buffer,
         "train_augment": args.train_augment,
+        "train_sampler_mode": args.train_sampler_mode,
         "label_smoothing": args.label_smoothing,
         "early_stopping_patience": args.early_stopping_patience,
         "encoder_variant": args.encoder_variant,
@@ -195,6 +215,7 @@ def build_dataloaders(
     train_augment: str,
     train_per_class: int,
     val_per_class: int,
+    train_sampler_mode: str,
 ) -> SplitLoaders:
     data = load_dataset(data_root)
 
@@ -267,7 +288,19 @@ def build_dataloaders(
         "num_workers": num_workers,
         "pin_memory": should_pin_memory(device),
     }
-    train_loader = DataLoader(train_dataset_full, shuffle=True, drop_last=False, **loader_kwargs)
+    train_sampler = None
+    train_shuffle = True
+    if train_sampler_mode == "balanced":
+        train_sampler = build_balanced_sampler(train_items, num_classes=num_classes, seed=split_seed)
+        train_shuffle = False
+
+    train_loader = DataLoader(
+        train_dataset_full,
+        shuffle=train_shuffle,
+        sampler=train_sampler,
+        drop_last=False,
+        **loader_kwargs,
+    )
     val_loader = DataLoader(val_dataset, shuffle=False, drop_last=False, **loader_kwargs)
     test_loader = DataLoader(test_dataset, shuffle=False, drop_last=False, **loader_kwargs)
 
@@ -463,6 +496,7 @@ def parse_args() -> argparse.Namespace:
         choices=["none", "d4", "flip_only", "rot180", "spectral_noise"],
         default="none",
     )
+    parser.add_argument("--train-sampler-mode", type=str, choices=["random", "balanced"], default="random")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -571,6 +605,7 @@ def main() -> None:
         train_augment=args.train_augment,
         train_per_class=args.train_per_class,
         val_per_class=args.val_per_class,
+        train_sampler_mode=args.train_sampler_mode,
     )
 
     model = create_model(args, loaders.hsi_channels, loaders.lidar_channels, loaders.num_classes)
