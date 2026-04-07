@@ -125,6 +125,7 @@ class HCT_BGC(nn.Module):
         encoder_variant: str = "hetero",
         use_conservative_fusion: bool = False,
         use_aux_heads: bool = False,
+        aux_head_mode: str = "linear",
     ) -> None:
         super().__init__()
         if fusion_layers not in {1, 2, 3}:
@@ -162,6 +163,7 @@ class HCT_BGC(nn.Module):
             "encoder_variant": encoder_variant,
             "use_conservative_fusion": use_conservative_fusion,
             "use_aux_heads": use_aux_heads,
+            "aux_head_mode": aux_head_mode,
         }
         self.hsi_encoder = HsiCnnEncoder(hsi_in_channels, embed_dim=embed_dim, variant=encoder_variant)
         self.lidar_encoder = LidarCnnEncoder(in_channels=lidar_in_channels, embed_dim=embed_dim, variant=encoder_variant)
@@ -256,6 +258,7 @@ class HCT_BGC(nn.Module):
             conservative=use_conservative_fusion,
         )
         self.use_aux_heads = use_aux_heads
+        self.aux_head_mode = aux_head_mode
         # 分类头：输入 fused_token(B, D),输出 logits(B, num_classes)
         self.classifier = nn.Sequential(
             nn.LayerNorm(embed_dim),
@@ -265,8 +268,26 @@ class HCT_BGC(nn.Module):
             nn.Linear(mlp_dim, num_classes),
         )
         if use_aux_heads:
-            self.hsi_aux_classifier = nn.Linear(embed_dim, num_classes)
-            self.lidar_aux_classifier = nn.Linear(embed_dim, num_classes)
+            if aux_head_mode == "linear":
+                self.hsi_aux_classifier = nn.Linear(embed_dim, num_classes)
+                self.lidar_aux_classifier = nn.Linear(embed_dim, num_classes)
+            elif aux_head_mode == "mlp":
+                self.hsi_aux_classifier = nn.Sequential(
+                    nn.LayerNorm(embed_dim),
+                    nn.Linear(embed_dim, mlp_dim),
+                    nn.GELU(),
+                    nn.Dropout(dropout),
+                    nn.Linear(mlp_dim, num_classes),
+                )
+                self.lidar_aux_classifier = nn.Sequential(
+                    nn.LayerNorm(embed_dim),
+                    nn.Linear(embed_dim, mlp_dim),
+                    nn.GELU(),
+                    nn.Dropout(dropout),
+                    nn.Linear(mlp_dim, num_classes),
+                )
+            else:
+                raise ValueError(f"Unsupported aux_head_mode: {aux_head_mode}")
         else:
             self.hsi_aux_classifier = None
             self.lidar_aux_classifier = None

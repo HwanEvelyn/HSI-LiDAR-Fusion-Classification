@@ -66,6 +66,7 @@ class EpochStats:
     ce_loss: float
     contrastive_loss: float
     aux_loss: float
+    aux_distill_loss: float
     y_true: np.ndarray
     y_pred: np.ndarray
 
@@ -120,6 +121,7 @@ def create_model(args: argparse.Namespace | dict, hsi_channels: int, lidar_chann
             encoder_variant=args.get("encoder_variant", "hetero") if isinstance(args, dict) else args.encoder_variant,
             use_conservative_fusion=args.get("use_conservative_fusion", False) if isinstance(args, dict) else args.use_conservative_fusion,
             use_aux_heads=args.get("use_aux_heads", False) if isinstance(args, dict) else args.use_aux_heads,
+            aux_head_mode=args.get("aux_head_mode", "linear") if isinstance(args, dict) else args.aux_head_mode,
         )
     raise ValueError(f"Unsupported model: {model_name}")
 
@@ -168,6 +170,9 @@ def collect_model_config(
         "use_conservative_fusion": args.use_conservative_fusion,
         "use_aux_heads": args.use_aux_heads,
         "aux_weight": args.aux_weight,
+        "aux_head_mode": args.aux_head_mode,
+        "aux_distill_weight": args.aux_distill_weight,
+        "aux_distill_temperature": args.aux_distill_temperature,
     }
     if hasattr(model, "get_config"):
         config.update(model.get_config())
@@ -189,6 +194,14 @@ def info_nce_loss(h_cls: torch.Tensor, l_cls: torch.Tensor, temperature: float) 
     loss_h_to_l = F.cross_entropy(logits, labels)
     loss_l_to_h = F.cross_entropy(logits.T, labels)
     return 0.5 * (loss_h_to_l + loss_l_to_h)
+
+
+def logits_kl_loss(student_logits: torch.Tensor, teacher_logits: torch.Tensor, temperature: float) -> torch.Tensor:
+    if temperature <= 0:
+        raise ValueError("temperature 必须大于 0")
+    student_log_probs = F.log_softmax(student_logits / temperature, dim=1)
+    teacher_probs = F.softmax(teacher_logits / temperature, dim=1)
+    return F.kl_div(student_log_probs, teacher_probs, reduction="batchmean") * (temperature ** 2)
 
 
 def mps_is_available() -> bool:
@@ -329,6 +342,8 @@ def run_epoch(
     temperature: float,
     use_aux_heads: bool,
     aux_weight: float,
+    aux_distill_weight: float,
+    aux_distill_temperature: float,
     optimizer: Adam | None = None,
 ) -> EpochStats:
     is_train = optimizer is not None
@@ -338,6 +353,7 @@ def run_epoch(
     ce_loss_sum = 0.0
     contrastive_loss_sum = 0.0
     aux_loss_sum = 0.0
+    aux_distill_loss_sum = 0.0
     total_samples = 0
     all_targets = []
     all_preds = []
@@ -356,6 +372,7 @@ def run_epoch(
             ce_loss = criterion(logits, target)
             contrastive_loss = torch.zeros((), device=device)
             aux_loss = torch.zeros((), device=device)
+            aux_distill_loss = torch.zeros((), device=device)
             if use_contrastive:
                 if "h_cls" not in outputs or "l_cls" not in outputs:
                     raise KeyError("启用对比损失时，模型输出必须包含 'h_cls' 和 'l_cls'")
@@ -364,7 +381,18 @@ def run_epoch(
                 if "h_logits" not in outputs or "l_logits" not in outputs:
                     raise KeyError("启用辅助头时，模型输出必须包含 'h_logits' 和 'l_logits'")
                 aux_loss = 0.5 * (criterion(outputs["h_logits"], target) + criterion(outputs["l_logits"], target))
-            loss = ce_loss + contrastive_weight * contrastive_loss + aux_weight * aux_loss
+                if aux_distill_weight > 0:
+                    teacher_logits = outputs["logits"].detach()
+                    aux_distill_loss = 0.5 * (
+                        logits_kl_loss(outputs["h_logits"], teacher_logits, aux_distill_temperature)
+                        + logits_kl_loss(outputs["l_logits"], teacher_logits, aux_distill_temperature)
+                    )
+            loss = (
+                ce_loss
+                + contrastive_weight * contrastive_loss
+                + aux_weight * aux_loss
+                + aux_distill_weight * aux_distill_loss
+            )
             if is_train:
                 loss.backward()
                 optimizer.step()
@@ -374,6 +402,7 @@ def run_epoch(
         ce_loss_sum += float(ce_loss.item()) * batch_size
         contrastive_loss_sum += float(contrastive_loss.item()) * batch_size
         aux_loss_sum += float(aux_loss.item()) * batch_size
+        aux_distill_loss_sum += float(aux_distill_loss.item()) * batch_size
         total_samples += batch_size
         all_targets.append(target.detach().cpu().numpy())
         all_preds.append(logits.argmax(dim=1).detach().cpu().numpy())
@@ -382,6 +411,7 @@ def run_epoch(
     avg_ce = ce_loss_sum / max(total_samples, 1)
     avg_contrastive = contrastive_loss_sum / max(total_samples, 1)
     avg_aux = aux_loss_sum / max(total_samples, 1)
+    avg_aux_distill = aux_distill_loss_sum / max(total_samples, 1)
     y_true = np.concatenate(all_targets) if all_targets else np.array([], dtype=np.int64)
     y_pred = np.concatenate(all_preds) if all_preds else np.array([], dtype=np.int64)
     return EpochStats(
@@ -389,6 +419,7 @@ def run_epoch(
         ce_loss=avg_ce,
         contrastive_loss=avg_contrastive,
         aux_loss=avg_aux,
+        aux_distill_loss=avg_aux_distill,
         y_true=y_true,
         y_pred=y_pred,
     )
@@ -411,6 +442,8 @@ def evaluate_split(
         temperature=1.0,
         use_aux_heads=False,
         aux_weight=0.0,
+        aux_distill_weight=0.0,
+        aux_distill_temperature=1.0,
         optimizer=None,
     )
     cm = confusion_matrix(epoch_stats.y_true, epoch_stats.y_pred, num_classes=num_classes)
@@ -479,6 +512,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-conservative-fusion", action="store_true")
     parser.add_argument("--use-aux-heads", action="store_true")
     parser.add_argument("--aux-weight", type=float, default=0.2)
+    parser.add_argument("--aux-head-mode", type=str, choices=["linear", "mlp"], default="linear")
+    parser.add_argument("--aux-distill-weight", type=float, default=0.0)
+    parser.add_argument("--aux-distill-temperature", type=float, default=2.0)
     parser.add_argument("--use-contrastive", action="store_true")
     parser.add_argument("--contrastive-weight", type=float, default=0.1)
     parser.add_argument("--temperature", type=float, default=0.1)
@@ -643,6 +679,8 @@ def main() -> None:
             temperature=args.temperature,
             use_aux_heads=args.use_aux_heads,
             aux_weight=args.aux_weight,
+            aux_distill_weight=args.aux_distill_weight,
+            aux_distill_temperature=args.aux_distill_temperature,
             optimizer=optimizer,
         )
         val_metrics = evaluate_split(model, loaders.val, criterion, device, num_classes=loaders.num_classes)
@@ -651,6 +689,7 @@ def main() -> None:
             f"train_ce={train_stats.ce_loss:.4f} | "
             f"train_contrastive={train_stats.contrastive_loss:.4f} | "
             f"train_aux={train_stats.aux_loss:.4f} | "
+            f"train_aux_distill={train_stats.aux_distill_loss:.4f} | "
             f"train_total={train_stats.total_loss:.4f} | "
             f"val_loss={val_metrics['loss']:.4f} | "
             f"val_oa={val_metrics['oa']:.4f} | "
@@ -667,6 +706,7 @@ def main() -> None:
                 "train_ce": float(train_stats.ce_loss),
                 "train_contrastive": float(train_stats.contrastive_loss),
                 "train_aux": float(train_stats.aux_loss),
+                "train_aux_distill": float(train_stats.aux_distill_loss),
                 "train_total": float(train_stats.total_loss),
                 "val_loss": float(val_metrics["loss"]),
                 "val_oa": float(val_metrics["oa"]),
