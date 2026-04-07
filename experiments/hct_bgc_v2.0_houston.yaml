@@ -1,4 +1,4 @@
-name: hct_bgc_v2_houston_multiscale_11_17
+name: hct_bgc_v2_houston_v2.0
 output_root: results/repeats
 train_args:
   model: hct_bgc
@@ -6,9 +6,7 @@ train_args:
   split_mode: official
   preprocess_scope: train
   patch_size: 11
-  context_patch_size: 17
-  context_token_size: 11
-  scale_fusion_mode: residual
+  scale_fusion_mode: average
   pca_components: 30
   embed_dim: 128
   num_heads: 4
@@ -16,8 +14,7 @@ train_args:
   fusion_layers: 1
   encoder_variant: light_hetero
   use_conservative_fusion: true
-  use_aux_heads: true
-  aux_weight: 0.2
+  use_aux_heads: false
   dropout: 0.1
   weight_decay: 5e-4
   label_smoothing: 0.1

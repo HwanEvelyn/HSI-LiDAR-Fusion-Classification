@@ -1,4 +1,4 @@
-name: hct_bgc_v2_houston_multiscale_11_17
+name: hct_bgc_v2_1_ms_houston
 output_root: results/repeats
 train_args:
   model: hct_bgc
@@ -17,7 +17,10 @@ train_args:
   encoder_variant: light_hetero
   use_conservative_fusion: true
   use_aux_heads: true
+  aux_head_mode: linear
   aux_weight: 0.2
+  aux_distill_weight: 0.1
+  aux_distill_temperature: 2.0
   dropout: 0.1
   weight_decay: 5e-4
   label_smoothing: 0.1
