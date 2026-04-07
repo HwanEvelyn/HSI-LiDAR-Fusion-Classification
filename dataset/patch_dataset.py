@@ -2,7 +2,9 @@
     pipeline:
     1.读取 data_hl.mat文件，提取HSI、LiDAR和GT数据
     2.Norm → PCA → Patch 
-    3.划分训练样本列表 + patch数据集 √
+    3.划分训练样本列表 + patch数据集 √：
+        第一，按中心像素坐标去切 patch。
+        第二，把 patch 变成张量，必要时做数据增强。
 """
 from __future__ import annotations
 

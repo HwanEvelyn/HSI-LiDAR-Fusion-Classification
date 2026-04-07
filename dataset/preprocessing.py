@@ -1,3 +1,6 @@
+"""
+    标准化 z-score + PCA + 边界 padding
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
