@@ -22,8 +22,8 @@ train_args:
   weight_decay: 5e-4
   label_smoothing: 0.1
   selection_metric: val_kappa
-  early_stopping_patience: 8
-  epochs: 30
+  early_stopping_patience: 20
+  epochs: 100
   batch_size: 64
   num_workers: 0
   split_seed: 42

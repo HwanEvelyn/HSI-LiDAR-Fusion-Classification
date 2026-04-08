@@ -72,12 +72,14 @@ def get_train_arg(train_args: dict[str, Any], key: str, default: Any) -> Any:
 
 def build_loaders_from_checkpoint(train_args: dict[str, Any], device: torch.device):
     patch_size = int(get_train_arg(train_args, "patch_size", 11))
+    context_patch_size = int(get_train_arg(train_args, "context_patch_size", 0))
+    extraction_patch_size = max(patch_size, context_patch_size)
     val_spatial_buffer = int(get_train_arg(train_args, "val_spatial_buffer", patch_size // 2))
     if val_spatial_buffer < 0:
-        val_spatial_buffer = patch_size // 2
+        val_spatial_buffer = extraction_patch_size // 2
     return build_dataloaders(
         data_root=str(get_train_arg(train_args, "data_root", "data/raw/Houston 2013/2013_DFTC")),
-        patch_size=patch_size,
+        patch_size=extraction_patch_size,
         pca_components=int(get_train_arg(train_args, "pca_components", 30)),
         train_ratio=float(get_train_arg(train_args, "train_ratio", 0.6)),
         batch_size=int(get_train_arg(train_args, "batch_size", 64)),
@@ -88,6 +90,10 @@ def build_loaders_from_checkpoint(train_args: dict[str, Any], device: torch.devi
         device=device,
         val_ratio=float(get_train_arg(train_args, "val_ratio", 0.2)),
         val_spatial_buffer=val_spatial_buffer,
+        train_augment=str(get_train_arg(train_args, "train_augment", "none")),
+        train_per_class=int(get_train_arg(train_args, "train_per_class", 0)),
+        val_per_class=int(get_train_arg(train_args, "val_per_class", 0)),
+        train_sampler_mode=str(get_train_arg(train_args, "train_sampler_mode", "default")),
     )
 
 

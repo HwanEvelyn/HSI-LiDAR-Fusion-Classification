@@ -1,13 +1,11 @@
-name: hct_bgc_v2_houston_multiscale_11_17
+name: hct_bgc_v2.0_trento
 output_root: results/repeats
 train_args:
   model: hct_bgc
-  data_root: data/raw/Houston 2013/2013_DFTC
+  data_root: data/raw/Trento
   split_mode: official
   preprocess_scope: train
   patch_size: 11
-  context_patch_size: 17
-  context_token_size: 11
   scale_fusion_mode: residual
   pca_components: 30
   embed_dim: 128
@@ -22,8 +20,8 @@ train_args:
   weight_decay: 5e-4
   label_smoothing: 0.1
   selection_metric: val_kappa
-  early_stopping_patience: 20
-  epochs: 100
+  early_stopping_patience: 8
+  epochs: 30
   batch_size: 64
   num_workers: 0
   split_seed: 42

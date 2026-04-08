@@ -1,0 +1,15 @@
+name: baseline_trento
+output_root: results/repeats
+train_args:
+  model: baseline
+  data_root: data/raw/Trento
+  split_mode: official
+  preprocess_scope: train
+  split_seed: 42
+  val_ratio: 0.2
+  selection_metric: val_oa
+  patch_size: 11
+  pca_components: 30
+  epochs: 30
+  batch_size: 64
+  num_workers: 0

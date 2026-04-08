@@ -1,0 +1,20 @@
+name: hct_bgc_v1_trento
+output_root: results/repeats
+train_args:
+  model: hct_bgc
+  data_root: data/raw/Trento
+  split_mode: official
+  preprocess_scope: train
+  split_seed: 42
+  val_ratio: 0.2
+  selection_metric: val_oa
+  patch_size: 11
+  pca_components: 30
+  embed_dim: 128
+  num_heads: 4
+  num_layers: 2
+  fusion_layers: 1
+  dropout: 0.1
+  epochs: 30
+  batch_size: 64
+  num_workers: 0

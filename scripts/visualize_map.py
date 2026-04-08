@@ -14,8 +14,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from dataset.mat_loader import build_official_houston_split, load_dataset
-from dataset.patch_dataset import HsiLidarPatchDataset, IndexItem, build_index_three_way, split_items_spatial_holdout
+from dataset.mat_loader import build_official_houston_split, build_official_trento_split, load_dataset
+from dataset.patch_dataset import (
+    HsiLidarPatchDataset,
+    IndexItem,
+    build_index_three_way,
+    split_items_by_ratio,
+    split_items_spatial_holdout,
+)
 from dataset.preprocessing import pca_reduce, pca_reduce_with_mask, zscore_norm, zscore_norm_with_mask
 from train import create_model, log_device_info, maybe_fallback_from_mps, resolve_device, should_pin_memory, unpack_model_outputs
 from utils.logger import SimpleLogger
@@ -29,6 +35,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=str, default="results/paper_figures/maps")
     parser.add_argument("--region", type=str, choices=["test", "labeled"], default="test")
     parser.add_argument("--device", type=str, choices=["auto", "cuda", "mps", "cpu"], default="auto")
+    parser.add_argument("--baseline-label", type=str, default="Baseline-CNN")
+    parser.add_argument("--hct-label", type=str, default="HCT-BGC")
     parser.add_argument("--zoom-size", type=int, default=80, help="放大区域的边长")
     parser.add_argument("--zoom-row", type=int, default=-1, help="放大区域左上角行坐标，<0 表示自动选择")
     parser.add_argument("--zoom-col", type=int, default=-1, help="放大区域左上角列坐标，<0 表示自动选择")
@@ -41,6 +49,14 @@ def build_preprocessed_data(train_args: dict) -> tuple[np.ndarray, np.ndarray, n
     if split_mode == "official" and data.dataset_name == "houston":
         train_items, test_items, _ = build_official_houston_split(data)
         val_items = []
+    elif split_mode == "official" and data.dataset_name == "trento":
+        split_seed = int(train_args.get("split_seed", train_args.get("seed", 42)))
+        train_items_full, test_items, _ = build_official_trento_split(data, seed=split_seed)
+        train_items, val_items = split_items_by_ratio(
+            train_items_full,
+            holdout_ratio=float(train_args.get("val_ratio", 0.2)),
+            seed=split_seed,
+        )
     elif split_mode == "official":
         coords = np.argwhere(data.gt > 0)
         all_items = [IndexItem(int(r), int(c), int(data.gt[r, c]) - 1) for r, c in coords]
@@ -235,12 +251,20 @@ def save_gate_stats(
     plt.close()
 
 
-def save_panel_figure(output_path: Path, gt_map: np.ndarray, baseline_map: np.ndarray, hct_map: np.ndarray, num_classes: int) -> None:
+def save_panel_figure(
+    output_path: Path,
+    gt_map: np.ndarray,
+    baseline_map: np.ndarray,
+    hct_map: np.ndarray,
+    num_classes: int,
+    baseline_label: str,
+    hct_label: str,
+) -> None:
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     panels = [
         ("GT", gt_map),
-        ("Baseline-CNN", baseline_map),
-        ("HCT-BGC-v1", hct_map),
+        (baseline_label, baseline_map),
+        (hct_label, hct_map),
     ]
     for ax, (title, panel_map) in zip(axes, panels):
         ax.imshow(colorize_map(panel_map, num_classes))
@@ -307,6 +331,8 @@ def save_comparison_figure(
     baseline_map: np.ndarray,
     hct_map: np.ndarray,
     num_classes: int,
+    baseline_label: str,
+    hct_label: str,
     zoom_row: int,
     zoom_col: int,
     zoom_size: int,
@@ -330,8 +356,8 @@ def save_comparison_figure(
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
     panels = [
         ("GT", gt_map),
-        ("Baseline", baseline_map),
-        ("HCT-BGC", hct_map),
+        (baseline_label, baseline_map),
+        (hct_label, hct_map),
     ]
     for ax, (title, panel_map) in zip(axes.flat[:3], panels):
         ax.imshow(colorize_map(panel_map, num_classes))
@@ -341,7 +367,7 @@ def save_comparison_figure(
         ax.axis("off")
 
     axes[1, 1].imshow(zoom_canvas)
-    axes[1, 1].set_title("Zoom Region: GT | Baseline | HCT-BGC")
+    axes[1, 1].set_title(f"Zoom Region: GT | {baseline_label} | {hct_label}")
     axes[1, 1].axis("off")
     fig.tight_layout()
     fig.savefig(output_path, dpi=300)
@@ -369,20 +395,30 @@ def main() -> None:
     baseline_pred_map, _, _ = predict_map(baseline_ckpt, target_map, hsi, lidar, device, logger)
     hct_pred_map, gate_mean_map, gate_class_pref = predict_map(hct_ckpt, target_map, hsi, lidar, device, logger)
 
-    save_panel_figure(output_dir / "classification_map_panel.png", target_map, baseline_pred_map, hct_pred_map, int(hct_ckpt["num_classes"]))
+    save_panel_figure(
+        output_dir / "classification_map_panel.png",
+        target_map,
+        baseline_pred_map,
+        hct_pred_map,
+        int(hct_ckpt["num_classes"]),
+        baseline_label=args.baseline_label,
+        hct_label=args.hct_label,
+    )
     save_comparison_figure(
         output_path=output_dir / "classification_comparison.png",
         gt_map=target_map,
         baseline_map=baseline_pred_map,
         hct_map=hct_pred_map,
         num_classes=int(hct_ckpt["num_classes"]),
+        baseline_label=args.baseline_label,
+        hct_label=args.hct_label,
         zoom_row=args.zoom_row,
         zoom_col=args.zoom_col,
         zoom_size=args.zoom_size,
     )
     plt.imsave(output_dir / "classification_map_gt.png", colorize_map(target_map, int(hct_ckpt["num_classes"])))
     plt.imsave(output_dir / "classification_map_baseline.png", colorize_map(baseline_pred_map, int(hct_ckpt["num_classes"])))
-    plt.imsave(output_dir / "classification_map_hct_bgc_v1.png", colorize_map(hct_pred_map, int(hct_ckpt["num_classes"])))
+    plt.imsave(output_dir / "classification_map_hct.png", colorize_map(hct_pred_map, int(hct_ckpt["num_classes"])))
     save_gate_stats(output_dir, gate_mean_map, gate_class_pref)
     logger.log(f"Saved paper figure assets to {output_dir}")
 

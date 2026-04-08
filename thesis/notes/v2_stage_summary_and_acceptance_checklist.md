@@ -374,7 +374,6 @@ data/raw/Houston 2013/2013_DFTC/
     - 对多尺度 `11×17`，默认 buffer 为 `8`
 
 - 预处理说明  
-  当前主实验可写为：
   - PCA 维度：主配置为 `pca_components = 30`
   - 归一化方式：z-score 标准化
     - 当 `preprocess_scope = train` 时，仅使用训练像素统计量拟合均值和标准差
