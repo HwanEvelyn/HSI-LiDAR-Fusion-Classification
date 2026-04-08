@@ -20,6 +20,9 @@ from skimage.draw import polygon as draw_polygon
 from .patch_dataset import IndexItem
 
 
+TRENTO_OFFICIAL_TRAIN_COUNTS: tuple[int, ...] = (129, 125, 105, 154, 184, 122)
+
+
 class _SuppressGdalNoDataFilter(logging.Filter):
     """
     过滤掉 tifffile 模块的 GDAL_NODATA 错误信息
@@ -328,6 +331,42 @@ def build_official_houston_split(mat_data: MatData) -> tuple[list[IndexItem], li
     ]
 
     num_classes = int(max(mat_data.train_gt.max(), mat_data.test_gt.max()))
+    return train_items, test_items, num_classes
+
+
+def build_official_trento_split(
+    mat_data: MatData,
+    seed: int = 42,
+) -> tuple[list[IndexItem], list[IndexItem], int]:
+    gt = np.asarray(mat_data.gt, dtype=np.int64)
+    labels = gt[gt > 0]
+    num_classes = int(labels.max())
+    if num_classes != len(TRENTO_OFFICIAL_TRAIN_COUNTS):
+        raise ValueError(
+            f"Trento 固定协议期望 {len(TRENTO_OFFICIAL_TRAIN_COUNTS)} 类，当前读到 {num_classes} 类"
+        )
+
+    rng = np.random.default_rng(seed)
+    train_items: list[IndexItem] = []
+    test_items: list[IndexItem] = []
+
+    for cls, train_count in enumerate(TRENTO_OFFICIAL_TRAIN_COUNTS, start=1):
+        coords = np.argwhere(gt == cls)
+        if len(coords) <= train_count:
+            raise ValueError(
+                f"Trento 类别 {cls} 样本不足：总数={len(coords)}，固定训练数需要 {train_count}"
+            )
+        rng.shuffle(coords)
+        train_coords = coords[:train_count]
+        test_coords = coords[train_count:]
+
+        for r, c in train_coords:
+            train_items.append(IndexItem(int(r), int(c), cls - 1))
+        for r, c in test_coords:
+            test_items.append(IndexItem(int(r), int(c), cls - 1))
+
+    rng.shuffle(train_items)
+    rng.shuffle(test_items)
     return train_items, test_items, num_classes
 
 

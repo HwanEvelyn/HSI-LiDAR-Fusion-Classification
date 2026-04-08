@@ -1,0 +1,29 @@
+name: hct_bgc_v2_trento_multiscale_11_17
+output_root: results/repeats
+train_args:
+  model: hct_bgc
+  data_root: data/raw/Trento
+  split_mode: official
+  preprocess_scope: train
+  patch_size: 11
+  context_patch_size: 17
+  context_token_size: 11
+  scale_fusion_mode: residual
+  pca_components: 30
+  embed_dim: 128
+  num_heads: 4
+  num_layers: 2
+  fusion_layers: 1
+  encoder_variant: light_hetero
+  use_conservative_fusion: true
+  use_aux_heads: true
+  aux_weight: 0.2
+  dropout: 0.1
+  weight_decay: 5e-4
+  label_smoothing: 0.1
+  selection_metric: val_kappa
+  early_stopping_patience: 8
+  epochs: 30
+  batch_size: 64
+  num_workers: 0
+  split_seed: 42

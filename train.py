@@ -13,12 +13,13 @@ from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
-from dataset.mat_loader import build_official_houston_split, load_dataset
+from dataset.mat_loader import build_official_houston_split, build_official_trento_split, load_dataset
 from dataset.patch_dataset import (
     HsiLidarPatchDataset,
     IndexItem,
     build_index_fewshot,
     build_index_three_way,
+    split_items_by_ratio,
     split_items_spatial_holdout,
 )
 from dataset.preprocessing import pca_reduce, pca_reduce_with_mask, zscore_norm, zscore_norm_with_mask
@@ -245,6 +246,13 @@ def build_dataloaders(
             official_train_items,
             holdout_ratio=val_ratio,
             buffer_radius=val_spatial_buffer,
+            seed=split_seed,
+        )
+    elif split_mode == "official" and data.dataset_name == "trento":
+        official_train_items, test_items, num_classes = build_official_trento_split(data, seed=split_seed)
+        train_items, val_items = split_items_by_ratio(
+            official_train_items,
+            holdout_ratio=val_ratio,
             seed=split_seed,
         )
     elif split_mode == "official":
